@@ -13,6 +13,7 @@ import 'package:tiff/tiff_io.dart';
 
 part 'tiff_viewer/preview_decoder.dart';
 part 'tiff_viewer/tile_engine.dart';
+part 'tiff_viewer/region_engine.dart';
 part 'tiff_viewer/pixel_scale.dart';
 part 'tiff_viewer/zoomable_image.dart';
 part 'tiff_viewer/minimap.dart';
@@ -52,27 +53,19 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
   int? _fileSizeBytes;
   TiffDocument? _document;
   Object? _decodeError;
-  ui.Image? _renderedImage;
-  Object? _renderError;
   String? _writeTestResult;
   bool _runningWriteTest = false;
 
-  Uint8List? _rgba;
-  int _rgbaWidth = 0;
-  int _rgbaHeight = 0;
-  bool _previewDownscaled = false;
   double _brightness = 0;
   double _contrast = 1;
   double _gamma = 1;
 
   bool _previewLoading = false;
-  double? _previewProgress;
-  Isolate? _decodeIsolate;
-  ReceivePort? _decodePort;
 
   _TileEngine? _tileEngine;
+  _RegionEngine? _regionEngine;
 
-  bool get _previewStarted => _previewLoading || _renderedImage != null || _tileEngine != null;
+  bool get _previewStarted => _previewLoading || _tileEngine != null || _regionEngine != null;
 
   @override
   void initState() {
@@ -84,9 +77,8 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
   void dispose() {
     // Releases the open file handle a file-backed TiffDocument holds.
     _document?.close();
-    _decodePort?.close();
-    _decodeIsolate?.kill(priority: Isolate.immediate);
     _tileEngine?.dispose();
+    _regionEngine?.dispose();
     super.dispose();
   }
 
@@ -115,20 +107,23 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
   }
 
   /// Starts showing the pixel preview. A tiled page (see
-  /// [TiffImageMetadata.isTiled]) gets the viewport-driven [_TileEngine] —
-  /// only the region currently on screen is ever decoded, at whichever
-  /// pyramid level matches the current zoom, so a multi-gigapixel image
-  /// never needs a full decode just to be looked at. A non-tiled page falls
-  /// back to the single banded decode this app already had, run in a
-  /// throwaway background isolate that reports progress as it goes.
+  /// [TiffImageMetadata.isTiled]) gets the viewport-driven [_TileEngine];
+  /// a non-tiled page gets the analogous band-driven [_RegionEngine] (see
+  /// its doc comment for why bands rather than a 2D tile grid). Either way,
+  /// only the region currently on screen is ever decoded — a multi-gigapixel
+  /// image never needs a full decode just to be looked at — and the viewer
+  /// opens already centered on a device-sized region (see
+  /// [TiffInitialView.forViewport], applied in [_TiledZoomableImageState]/
+  /// [_RegionZoomableImageState]) rather than the whole page shrunk to fit.
   Future<void> _openPreview() async {
     final document = _document;
     if (document == null || _previewStarted) return;
 
+    setState(() => _previewLoading = true);
+
     if (document.images.first.metadata.isTiled) {
-      setState(() => _previewLoading = true);
       final engine = _TileEngine(filePath: widget.filePath, levels: _buildPyramidLevels(document));
-      engine.addListener(_onTileEngineChanged);
+      engine.addListener(_onEngineChanged);
       await engine.start();
       if (!mounted) {
         engine.dispose();
@@ -141,84 +136,21 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
       return;
     }
 
-    setState(() {
-      _previewLoading = true;
-      _previewProgress = null;
-      _renderError = null;
-    });
-
-    final metadata = document.images.first.metadata;
-    final receivePort = ReceivePort();
-    _decodePort = receivePort;
-    try {
-      _decodeIsolate = await Isolate.spawn(_decodePreviewIsolateEntry, (receivePort.sendPort, widget.filePath));
-    } catch (e) {
-      receivePort.close();
-      _decodePort = null;
-      if (mounted) {
-        setState(() {
-          _previewLoading = false;
-          _renderError = e;
-        });
-      }
+    final engine = _RegionEngine(filePath: widget.filePath, metadata: document.images.first.metadata);
+    engine.addListener(_onEngineChanged);
+    await engine.start();
+    if (!mounted) {
+      engine.dispose();
       return;
     }
-
-    await for (final message in receivePort) {
-      if (message is double) {
-        if (mounted) setState(() => _previewProgress = message);
-      } else if (message is String) {
-        if (mounted) {
-          setState(() {
-            _previewLoading = false;
-            _renderError = Exception(message);
-          });
-        }
-        break;
-      } else {
-        final (rgba, width, height) = message as (Uint8List, int, int);
-        _rgba = rgba;
-        _rgbaWidth = width;
-        _rgbaHeight = height;
-        _previewDownscaled = width != metadata.width || height != metadata.height;
-        final image = await _decodeImageFromPixels(rgba, width, height);
-        if (mounted) {
-          setState(() {
-            _renderedImage = image;
-            _previewLoading = false;
-          });
-        }
-        break;
-      }
-    }
-
-    receivePort.close();
-    _decodeIsolate?.kill(priority: Isolate.immediate);
-    _decodeIsolate = null;
-    _decodePort = null;
+    setState(() {
+      _regionEngine = engine;
+      _previewLoading = false;
+    });
   }
 
-  void _onTileEngineChanged() {
+  void _onEngineChanged() {
     if (mounted) setState(() {});
-  }
-
-  Future<ui.Image> _decodeImageFromPixels(Uint8List rgba, int width, int height) {
-    final completer = Completer<ui.Image>();
-    ui.decodeImageFromPixels(rgba, width, height, ui.PixelFormat.rgba8888, completer.complete);
-    return completer.future;
-  }
-
-  Future<void> _reapplyAdjustments() async {
-    final rgba = _rgba;
-    if (rgba == null) return;
-    final adjusted = ImageAdjustments.apply(
-      rgba,
-      brightness: _brightness,
-      contrast: _contrast,
-      gamma: _gamma,
-    );
-    final image = await _decodeImageFromPixels(adjusted, _rgbaWidth, _rgbaHeight);
-    if (mounted) setState(() => _renderedImage = image);
   }
 
   bool get _fullDecodeIsSafe {
@@ -306,35 +238,20 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                   FilledButton.icon(onPressed: _openPreview, icon: const Icon(Icons.image), label: const Text('Xem ảnh')),
                   const SizedBox(height: 16),
                 ],
-                if (_previewLoading && _tileEngine == null) ...[
-                  LinearProgressIndicator(value: _previewProgress),
+                if (_previewLoading && _tileEngine == null && _regionEngine == null) ...[
+                  const LinearProgressIndicator(),
                   const SizedBox(height: 8),
-                  Text(
-                    _previewProgress == null
-                        ? 'Đang mở ảnh...'
-                        : 'Đang giải mã ảnh xem trước... ${(_previewProgress! * 100).toStringAsFixed(0)}%',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                  const SizedBox(height: 16),
-                ],
-                if (_renderError != null && _tileEngine == null) ...[
-                  _ErrorCard(title: 'decodeRgba8() failed', error: _renderError!),
+                  Text('Đang mở ảnh...', style: Theme.of(context).textTheme.bodySmall),
                   const SizedBox(height: 16),
                 ],
                 if (_tileEngine?.fatalError != null) ...[
                   _ErrorCard(title: 'Tile decode failed', error: _tileEngine!.fatalError!),
                   const SizedBox(height: 16),
                 ],
-                if (_previewDownscaled)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Text(
-                      'Preview downscaled to $_rgbaWidth x $_rgbaHeight to limit memory use '
-                      '(full resolution is ${_document!.images.first.metadata.width} x '
-                      '${_document!.images.first.metadata.height}).',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.orange.shade800),
-                    ),
-                  ),
+                if (_regionEngine?.fatalError != null) ...[
+                  _ErrorCard(title: 'Region decode failed', error: _regionEngine!.fatalError!),
+                  const SizedBox(height: 16),
+                ],
                 if (_tileEngine != null)
                   SizedBox(
                     height: 420,
@@ -344,20 +261,19 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                       scale: _PixelScale.from(_document!.images.first.metadata),
                     ),
                   )
-                else if (_renderedImage != null)
+                else if (_regionEngine != null)
                   SizedBox(
                     height: 420,
-                    child: _ZoomableTiffImage(
-                      // Keyed by file path (not by the ui.Image, which is
-                      // recreated on every brightness/contrast/gamma tweak)
-                      // so zoom/pan state survives adjustments but resets
-                      // when a different file is opened.
+                    // Keyed by file path so zoom/pan state survives
+                    // brightness/contrast/gamma tweaks but resets when a
+                    // different file is opened.
+                    child: _RegionZoomableImage(
                       key: ValueKey(widget.filePath),
-                      image: _renderedImage!,
+                      engine: _regionEngine!,
                       scale: _PixelScale.from(_document!.images.first.metadata),
                     ),
                   ),
-                if (_renderedImage != null && _rgba != null) ...[
+                if (_regionEngine != null) ...[
                   const SizedBox(height: 8),
                   _AdjustmentSlider(
                     label: 'Brightness',
@@ -367,7 +283,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                     display: _brightness.toStringAsFixed(0),
                     onChanged: (v) {
                       setState(() => _brightness = v);
-                      _reapplyAdjustments();
+                      _regionEngine!.setAdjustments(brightness: _brightness, contrast: _contrast, gamma: _gamma);
                     },
                   ),
                   _AdjustmentSlider(
@@ -378,7 +294,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                     display: _contrast.toStringAsFixed(2),
                     onChanged: (v) {
                       setState(() => _contrast = v);
-                      _reapplyAdjustments();
+                      _regionEngine!.setAdjustments(brightness: _brightness, contrast: _contrast, gamma: _gamma);
                     },
                   ),
                   _AdjustmentSlider(
@@ -389,7 +305,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                     display: _gamma.toStringAsFixed(2),
                     onChanged: (v) {
                       setState(() => _gamma = v);
-                      _reapplyAdjustments();
+                      _regionEngine!.setAdjustments(brightness: _brightness, contrast: _contrast, gamma: _gamma);
                     },
                   ),
                   Align(
@@ -401,7 +317,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                           _contrast = 1;
                           _gamma = 1;
                         });
-                        _reapplyAdjustments();
+                        _regionEngine!.setAdjustments(brightness: _brightness, contrast: _contrast, gamma: _gamma);
                       },
                       child: const Text('Reset'),
                     ),

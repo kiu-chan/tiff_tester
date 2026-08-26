@@ -1,78 +1,5 @@
 part of '../tiff_viewer_page.dart';
 
-/// Entry point for a manually spawned [Isolate]. A plain [compute] call
-/// can't report progress mid-flight (it's one request, one response), so
-/// this streams fractional progress over [SendPort] as each band decodes
-/// and sends the final `(rgba, width, height)` result last. Must be a
-/// top-level function (no captured state); every message sent over the
-/// port must be safe to copy across the isolate boundary, so progress is
-/// a plain `double` and failure is reported as a plain `String` message
-/// rather than the original exception object.
-///
-/// Used only for pages that aren't tiled (see [TiffImageMetadata.isTiled]):
-/// a tiled page gets the viewport-driven [_TileEngine] instead, which never
-/// needs a single "decode everything, once" pass at all.
-void _decodePreviewIsolateEntry((SendPort, String) args) {
-  final (sendPort, filePath) = args;
-  try {
-    // Runs in its own isolate, which does not share the main isolate's
-    // static state — so JPEG support must be (re-)enabled here too, even
-    // though main() already called this once at startup.
-    TiffImageAdapter.enableJpegSupport();
-    final document = decodeTiffFile(File(filePath));
-    try {
-      final page = _choosePreviewPage(document);
-      final result = _decodePreviewRgba(page, onProgress: (p) => sendPort.send(p));
-      sendPort.send(result);
-    } finally {
-      document.close();
-    }
-  } catch (e) {
-    sendPort.send('$e');
-  }
-}
-
-/// Picks which page/IFD to decode the preview from. A multi-page file is
-/// often a resolution *pyramid* (e.g. whole-slide-image scanners like
-/// Philips's), where later pages are pre-downsampled versions of page 0 —
-/// sometimes by a huge factor (seen in practice: a 131072x100352 base page
-/// next to a 4096x3584 one). Decoding page 0 and downsampling it ourselves
-/// for a capped-size preview would mean decompressing the entire base
-/// image — potentially tens of thousands of JPEG tiles — just to throw
-/// almost all of it away. Picking the smallest pyramid page that still
-/// meets [_maxPreviewDim] does the same downsampling work the scanner
-/// already did, for a small fraction of the decode cost.
-///
-/// A multi-page TIFF can also carry unrelated extra images (label/macro
-/// shots, fixed-size thumbnails) that aren't pyramid levels of page 0 at
-/// all, so a page only counts as a candidate if its aspect ratio is close
-/// to page 0's — full pyramid levels match closely; unrelated images
-/// generally don't.
-TiffImage _choosePreviewPage(TiffDocument document) {
-  final images = document.images;
-  final baseAspect = images.first.metadata.width / images.first.metadata.height;
-
-  TiffImage? smallestSufficient;
-  TiffImage? largestInsufficient;
-  for (final img in images) {
-    final m = img.metadata;
-    final aspect = m.width / m.height;
-    if ((aspect - baseAspect).abs() / baseAspect > 0.2) continue;
-
-    final longest = math.max(m.width, m.height);
-    if (longest >= _maxPreviewDim) {
-      if (smallestSufficient == null || longest < math.max(smallestSufficient.metadata.width, smallestSufficient.metadata.height)) {
-        smallestSufficient = img;
-      }
-    } else {
-      if (largestInsufficient == null || longest > math.max(largestInsufficient.metadata.width, largestInsufficient.metadata.height)) {
-        largestInsufficient = img;
-      }
-    }
-  }
-  return smallestSufficient ?? largestInsufficient ?? images.first;
-}
-
 /// One resolution rung of a page pyramid, largest (most detailed) first —
 /// see [_buildPyramidLevels]. [tileWidth]/[tileLength] default to the
 /// whole level's dimensions when the underlying page isn't itself tiled,
@@ -96,10 +23,18 @@ class _PyramidLevel {
   });
 }
 
-/// Same aspect-ratio pyramid-level filter as [_choosePreviewPage], but
-/// returns the whole ladder (largest/native first) instead of picking one
-/// rung — [_TileEngine] needs every level so it can switch rungs as the
-/// user zooms in and out.
+/// Builds the whole pyramid ladder (largest/native first) for a page: a
+/// multi-page file is often a resolution *pyramid* (e.g. whole-slide-image
+/// scanners like Philips's), where later pages are pre-downsampled versions
+/// of page 0 — sometimes by a huge factor (seen in practice: a
+/// 131072x100352 base page next to a 4096x3584 one). [_TileEngine] needs
+/// every rung so it can switch between them as the user zooms in and out.
+///
+/// A multi-page TIFF can also carry unrelated extra images (label/macro
+/// shots, fixed-size thumbnails) that aren't pyramid levels of page 0 at
+/// all, so a page only counts as a candidate if its aspect ratio is close
+/// to page 0's — full pyramid levels match closely; unrelated images
+/// generally don't.
 List<_PyramidLevel> _buildPyramidLevels(TiffDocument document) {
   final images = document.images;
   final baseAspect = images.first.metadata.width / images.first.metadata.height;

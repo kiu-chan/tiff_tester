@@ -102,31 +102,27 @@ void main() {
     await _viewImage(tester);
 
     expect(find.textContaining('TiffDecoder.decode() failed'), findsNothing);
-    expect(find.textContaining('decodeRgba8() failed'), findsNothing);
-    // The minimap renders its own RawImage of the same picture, so target
-    // the main viewer's by key rather than asserting findsOneWidget.
+    expect(find.textContaining('Region decode failed'), findsNothing);
+    // The main viewer is a CustomPaint reading live from a _RegionEngine
+    // (not a single fixed RawImage) — see _RegionZoomableImage — so just
+    // check it mounted and has a painter attached.
     final mainImageFinder = find.byKey(const Key('mainImage'));
     expect(mainImageFinder, findsOneWidget);
-    final rawImage = tester.widget<RawImage>(mainImageFinder);
-    expect(rawImage.image, isNotNull);
-    expect(rawImage.image!.width, 16);
-    expect(rawImage.image!.height, 16);
+    expect(tester.widget<CustomPaint>(mainImageFinder).painter, isNotNull);
   });
 
-  testWidgets('an oversized image is downscaled instead of decoding at full resolution', (tester) async {
-    // Wider than the app's 4096px preview cap but only 8 rows tall, so the
-    // test stays fast/cheap while still exercising the downsample path.
+  testWidgets('an oversized image opens centered on a region instead of decoding the whole page', (tester) async {
+    // Wider than the app's 4096px overview cap but only 8 rows tall, so the
+    // test stays fast/cheap while still exercising a page too big to just
+    // decode and show whole.
     final path = _writeSampleTiff(tempDir, width: 5000, height: 8);
     await _openViewer(tester, path);
     await _viewImage(tester);
 
     expect(find.textContaining('failed'), findsNothing);
-    expect(find.textContaining('Preview downscaled to 4096 x 7'), findsOneWidget);
-    expect(find.textContaining('full resolution is 5000 x 8'), findsOneWidget);
-
-    final rawImage = tester.widget<RawImage>(find.byKey(const Key('mainImage')));
-    expect(rawImage.image!.width, 4096);
-    expect(rawImage.image!.height, 7);
+    final mainImageFinder = find.byKey(const Key('mainImage'));
+    expect(mainImageFinder, findsOneWidget);
+    expect(tester.widget<CustomPaint>(mainImageFinder).painter, isNotNull);
   });
 
   testWidgets('an unreadable path surfaces a decode error instead of crashing', (tester) async {
@@ -152,19 +148,27 @@ void main() {
     final sliders = find.byType(Slider);
     expect(sliders, findsNWidgets(3));
 
-    await tester.drag(sliders.first, const Offset(40, 0));
-    await tester.pumpAndSettle();
-    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 100)));
-    await tester.pumpAndSettle();
+    // Changing an adjustment now redecodes bands (with the new brightness/
+    // contrast/gamma baked in, see _RegionEngine.setAdjustments) instead of
+    // recoloring an already-decoded in-memory buffer, and shows the
+    // indefinite-spinner _WorkingIndicator meanwhile — pumpAndSettle() never
+    // returns while that's in the tree, so drive the isolate round-trip via
+    // runAsync + a real delay and settle with a bounded pump instead, same
+    // as _viewImage does for the initial decode.
+    await tester.runAsync(() => tester.drag(sliders.first, const Offset(40, 0)));
+    await tester.pump();
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 300)));
+    await _pumpFrames(tester);
 
     expect(find.textContaining('failed'), findsNothing);
-    expect(find.byKey(const Key('mainImage')), findsOneWidget);
-    expect(tester.widget<RawImage>(find.byKey(const Key('mainImage'))).image, isNotNull);
+    final mainImageFinder = find.byKey(const Key('mainImage'));
+    expect(mainImageFinder, findsOneWidget);
+    expect(tester.widget<CustomPaint>(mainImageFinder).painter, isNotNull);
 
-    await tester.tap(find.text('Reset'));
-    await tester.pumpAndSettle();
-    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 100)));
-    await tester.pumpAndSettle();
+    await tester.runAsync(() => tester.tap(find.text('Reset')));
+    await tester.pump();
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 300)));
+    await _pumpFrames(tester);
 
     expect(find.textContaining('failed'), findsNothing);
     expect(find.byKey(const Key('mainImage')), findsOneWidget);

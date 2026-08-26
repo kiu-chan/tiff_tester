@@ -1,10 +1,10 @@
 part of '../tiff_viewer_page.dart';
 
 /// Entry point for the long-lived tile-serving isolate behind [_TileEngine].
-/// Unlike [_decodePreviewIsolateEntry] (one request, one response, then the
-/// isolate is discarded), this isolate stays alive for as long as the
-/// viewer is open and answers a stream of tile-decode requests, so panning
-/// and zooming never has to pay isolate-spawn cost per tile.
+/// This isolate stays alive for as long as the viewer is open and answers a
+/// stream of tile-decode requests, so panning and zooming never has to pay
+/// isolate-spawn cost per tile (see [_regionWorkerEntry] for the analogous
+/// long-lived worker behind [_RegionEngine], used for non-tiled pages).
 ///
 /// Handshake: sends its own [SendPort] back over [mainSendPort] first (or a
 /// `String` error if the file can't even be opened), then processes
@@ -88,6 +88,7 @@ class _TileEngine extends ChangeNotifier {
   );
 
   Object? _fatalError;
+  bool _disposed = false;
 
   ui.Image? overview;
 
@@ -108,6 +109,7 @@ class _TileEngine extends ChangeNotifier {
 
   Future<void> start() async {
     await Future.wait(_workers.map(_startWorker));
+    if (_disposed) return;
     _requestOverview();
   }
 
@@ -133,6 +135,7 @@ class _TileEngine extends ChangeNotifier {
   }
 
   void _onMessage(_TileWorker worker, dynamic message, Completer<void> handshake) {
+    if (_disposed) return;
     if (message is SendPort) {
       worker.sendPort = message;
       if (!handshake.isCompleted) handshake.complete();
@@ -313,6 +316,14 @@ class _TileEngine extends ChangeNotifier {
     }
     _pending.remove(key);
     final image = await _decodeUiImage(rgba, width, height);
+    // dispose() (widget torn down mid-decode) can land while the above
+    // await is in flight — the engine and its ChangeNotifier are gone by
+    // the time we get here, so just release this now-orphaned image
+    // instead of touching disposed state.
+    if (_disposed) {
+      image.dispose();
+      return;
+    }
     if (key == 'overview') {
       overview?.dispose();
       overview = image;
@@ -324,6 +335,7 @@ class _TileEngine extends ChangeNotifier {
   }
 
   void _handleTileFailure(_TileWorker worker, int requestId) {
+    if (_disposed) return;
     final key = _requestKeyById.remove(requestId);
     worker.busy = false;
     if (key != null) _pending.remove(key);
@@ -371,6 +383,7 @@ class _TileEngine extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     for (final worker in _workers) {
       worker.isolate?.kill(priority: Isolate.immediate);
       worker.receivePort?.close();

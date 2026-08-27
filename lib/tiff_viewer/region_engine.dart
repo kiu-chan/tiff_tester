@@ -75,7 +75,22 @@ typedef _RegionRequest = ({String kind, int bandIndex, int version});
 /// pyramid to pick a rung from), and requests are 1D (row-range only) since
 /// a band always spans the full page width.
 class _RegionEngine extends ChangeNotifier {
-  static const _maxCachedBands = 16;
+  /// How many decoded bands this instance's cache holds before evicting —
+  /// unlike [_bandTargetBytes] (which bounds *one* band's raw decode), this
+  /// bounds the retained RGBA cost of the whole persistent cache together,
+  /// so it needs this instance's actual band dimensions rather than a
+  /// context-free constant. Recomputed on every call (cheap: one RSS read
+  /// plus arithmetic) so it tracks the app's current memory pressure rather
+  /// than freezing whatever was true when the page opened.
+  int get _maxCachedBands {
+    final bytesPerBand = metadata.width * bandHeight * 4;
+    final budget = _MemoryMonitor.budgetFor(
+      fraction: 0.25, // up to a quarter of the budget for this persistent cache
+      minBytes: 4 * 1024 * 1024,
+      maxBytes: 128 * 1024 * 1024,
+    );
+    return math.max(4, budget ~/ math.max(1, bytesPerBand));
+  }
 
   /// How many bands beyond the visible edge to prefetch, in units of one
   /// band — small enough to stay cheap, big enough that a modest vertical
@@ -86,12 +101,24 @@ class _RegionEngine extends ChangeNotifier {
   /// [_maxBandBytes], which bounds a single *transient* band during a
   /// one-shot overview decode. This bounds each band in a *persistent*,
   /// multi-band cache instead, so [_maxCachedBands] of them stay reasonable
-  /// in memory together.
-  static const _bandTargetBytes = 4 * 1024 * 1024;
+  /// in memory together. Scales with [_MemoryMonitor.availableBudgetBytes]
+  /// the same way [_maxBandBytes] does, just at a smaller share.
+  static int _bandTargetBytes() => _MemoryMonitor.budgetFor(
+    fraction: 0.0078125, // 4 MiB out of the 512 MiB default budget
+    minBytes: 512 * 1024,
+    maxBytes: 8 * 1024 * 1024,
+  );
 
   final String filePath;
   final TiffImageMetadata metadata;
   final int bandHeight;
+
+  /// A previously-built [_DisplayCache] for this exact file (see
+  /// [_DisplayCache.open]), or `null` to decode live via [_regionWorkerEntry]
+  /// as usual. When set, every band/overview fetch is a plain file read
+  /// (see [_loadBandFromCache]/[_loadOverviewFromCache]) instead of a
+  /// round trip to the decode isolate — no isolate is even spawned.
+  final _DisplayCache? cache;
 
   Isolate? _isolate;
   ReceivePort? _receivePort;
@@ -113,11 +140,12 @@ class _RegionEngine extends ChangeNotifier {
 
   Rect? _lastVisibleRect;
 
-  _RegionEngine({required this.filePath, required this.metadata}) : bandHeight = _computeBandHeight(metadata);
+  _RegionEngine({required this.filePath, required this.metadata, this.cache})
+    : bandHeight = cache?.bandHeight ?? _computeBandHeight(metadata);
 
   static int _computeBandHeight(TiffImageMetadata m) {
     final bytesPerPixel = _bandBytesPerPixel(m);
-    return math.max(1, math.min(m.height, _bandTargetBytes ~/ (m.width * bytesPerPixel)));
+    return math.max(1, math.min(m.height, _bandTargetBytes() ~/ (m.width * bytesPerPixel)));
   }
 
   int get baseWidth => metadata.width;
@@ -126,6 +154,11 @@ class _RegionEngine extends ChangeNotifier {
   bool get isWorking => _busy || _pending.isNotEmpty;
 
   Future<void> start() async {
+    if (cache != null) {
+      await _loadOverviewFromCache();
+      return;
+    }
+
     final receivePort = ReceivePort();
     _receivePort = receivePort;
     final handshake = Completer<void>();
@@ -144,14 +177,19 @@ class _RegionEngine extends ChangeNotifier {
 
   void requestVisible(Rect baseVisibleRect) {
     _lastVisibleRect = baseVisibleRect;
-    _pump();
+    if (cache != null) {
+      _loadBandsFromCache();
+    } else {
+      _pump();
+    }
   }
 
   /// Sets new brightness/contrast/gamma values and clears the band cache —
   /// currently-visible bands get redecoded (with the new adjustments baked
-  /// in, see [_regionWorkerEntry]) via the normal [_pump] flow; off-screen
-  /// bands simply redecode next time they're panned into view instead of
-  /// paying for an upfront redecode of the whole cache.
+  /// in, see [_regionWorkerEntry]/[_loadBandFromCache]) via the normal
+  /// fetch flow; off-screen bands simply redecode next time they're panned
+  /// into view instead of paying for an upfront redecode of the whole
+  /// cache.
   void setAdjustments({required double brightness, required double contrast, required double gamma}) {
     _brightness = brightness;
     _contrast = contrast;
@@ -162,7 +200,72 @@ class _RegionEngine extends ChangeNotifier {
     }
     _cache.clear();
     notifyListeners();
-    _pump();
+    if (cache != null) {
+      _loadBandsFromCache();
+    } else {
+      _pump();
+    }
+  }
+
+  Future<void> _loadOverviewFromCache() async {
+    final cache = this.cache;
+    if (cache == null) return;
+    try {
+      final raw = await cache.readOverview();
+      final (w, h) = await cache.readOverviewSize();
+      if (_disposed) return;
+      final image = await _decodeUiImage(raw, w, h);
+      if (_disposed) {
+        image.dispose();
+        return;
+      }
+      overview = image;
+      notifyListeners();
+    } catch (_) {
+      // Leave overview null — the painter falls back to its placeholder
+      // background, and a broken/missing cache file otherwise doesn't stop
+      // bands from loading.
+    }
+  }
+
+  void _loadBandsFromCache() {
+    final cache = this.cache;
+    final rect = _lastVisibleRect;
+    if (cache == null || rect == null) return;
+    for (final band in _bandsForRect(rect)) {
+      if (_cache.containsKey(band) || _pending.contains(band)) continue;
+      _loadBandFromCache(cache, band);
+    }
+  }
+
+  Future<void> _loadBandFromCache(_DisplayCache cache, int bandIndex) async {
+    _pending.add(bandIndex);
+    final loadVersion = _adjustmentVersion;
+    try {
+      final raw = await cache.readBand(bandIndex);
+      if (_disposed) return;
+      final adjusted = (_brightness == 0 && _contrast == 1 && _gamma == 1)
+          ? raw
+          : ImageAdjustments.apply(raw, brightness: _brightness, contrast: _contrast, gamma: _gamma);
+      // Adjustments changed since this read started — its pixels are
+      // already stale, so drop it; the cleared cache already re-requested
+      // this band (or didn't, if it's no longer visible).
+      if (loadVersion != _adjustmentVersion) return;
+      final y = bandIndex * bandHeight;
+      final height = math.min(bandHeight, baseHeight - y);
+      final image = await _decodeUiImage(adjusted, baseWidth, height);
+      if (_disposed) {
+        image.dispose();
+        return;
+      }
+      _cacheBand(bandIndex, image);
+      notifyListeners();
+    } catch (_) {
+      // Leave it uncached — the next requestVisible() that still wants this
+      // band retries the read.
+    } finally {
+      _pending.remove(bandIndex);
+    }
   }
 
   void _onMessage(dynamic message, Completer<void> handshake) {

@@ -68,7 +68,18 @@ class _TileWorker {
 }
 
 class _TileEngine extends ChangeNotifier {
-  static const _maxCachedTiles = 320;
+  /// How many decoded tiles this instance's cache holds before evicting.
+  /// Tiles are this viewer's dominant persistent memory use, so they get
+  /// half of the shared budget — sized off the largest tile any pyramid
+  /// rung uses (rungs share one cache, and most files use one tile size
+  /// throughout anyway) rather than a context-free constant, and
+  /// recomputed on every call so it tracks current memory pressure instead
+  /// of freezing whatever was true when the page opened.
+  int get _maxCachedTiles {
+    final bytesPerTile = levels.map((l) => l.tileWidth * l.tileLength * 4).reduce(math.max);
+    final budget = _MemoryMonitor.budgetFor(fraction: 0.5, minBytes: 16 * 1024 * 1024, maxBytes: 256 * 1024 * 1024);
+    return math.max(16, budget ~/ math.max(1, bytesPerTile));
+  }
 
   /// How many tiles beyond the visible edge to prefetch, in units of one
   /// tile at the active level — small enough to stay cheap, big enough that

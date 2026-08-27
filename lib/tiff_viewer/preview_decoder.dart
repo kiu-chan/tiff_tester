@@ -104,7 +104,7 @@ int _tileGridArea(TiffImageMetadata m) {
   final output = Uint8List(outWidth * outHeight * 4);
 
   final bytesPerPixel = _bandBytesPerPixel(metadata);
-  final bandHeight = math.max(1, _maxBandBytes ~/ (srcWidth * bytesPerPixel));
+  final bandHeight = math.max(1, _maxBandBytes() ~/ (srcWidth * bytesPerPixel));
   for (var bandStart = 0; bandStart < srcHeight; bandStart += bandHeight) {
     final bh = math.min(bandHeight, srcHeight - bandStart);
     final band = page.decodeRegionRgba8(TiffRegion(x: 0, y: bandStart, width: srcWidth, height: bh));

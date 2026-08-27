@@ -16,14 +16,38 @@ part of '../tiff_viewer_page.dart';
 class _MemoryMonitor {
   const _MemoryMonitor._();
 
-  /// Soft ceiling this app aims to keep its own RSS under. This only bounds
-  /// *this app's own* footprint (see the class doc comment on why — no
-  /// sandboxed app can see true system-wide free memory), so it says
-  /// nothing about how much RAM the rest of a loaded machine has already
-  /// claimed — a dev machine running a browser, an editor, and other
-  /// background apps can be under real memory pressure well before this
-  /// app claims anywhere near its own ceiling.
-  static const totalBudgetBytes = 512 * 1024 * 1024;
+  /// Suggested starting point for [totalBudgetBytes] — reasonable for a
+  /// typical dev machine, but not a measurement of anything: there's no way
+  /// for this app to know how loaded the rest of the machine actually is
+  /// (see the class doc comment), so this is just a fixed, sane default the
+  /// UI can offer and the user is free to override.
+  static const defaultTotalBudgetBytes = 512 * 1024 * 1024;
+
+  /// Smallest/largest value the UI lets a user set [totalBudgetBytes] to —
+  /// below [_minTotalBudgetBytes] there's not enough headroom left for any
+  /// adaptive budget to make real progress; above [_maxTotalBudgetBytes]
+  /// there's no real benefit and it stops meaningfully protecting anything.
+  static const _minTotalBudgetBytes = 64 * 1024 * 1024;
+  static const _maxTotalBudgetBytes = 8192 * 1024 * 1024;
+
+  /// Soft ceiling this app aims to keep its own RSS under — user-settable
+  /// (see [setTotalBudgetBytes]), starting from [defaultTotalBudgetBytes].
+  /// This only bounds *this app's own* footprint (see the class doc comment
+  /// on why — no sandboxed app can see true system-wide free memory), so it
+  /// says nothing about how much RAM the rest of a loaded machine has
+  /// already claimed — a dev machine running a browser, an editor, and
+  /// other background apps can be under real memory pressure well before
+  /// this app claims anywhere near its own ceiling; a user who knows their
+  /// machine is tight on RAM (or has plenty to spare) can dial this down
+  /// (or up) accordingly.
+  static int totalBudgetBytes = defaultTotalBudgetBytes;
+
+  /// Sets [totalBudgetBytes], clamped to a sane range so a stray UI input
+  /// can't produce a budget too small to make progress or large enough to
+  /// stop meaning anything.
+  static void setTotalBudgetBytes(int bytes) {
+    totalBudgetBytes = bytes.clamp(_minTotalBudgetBytes, _maxTotalBudgetBytes);
+  }
 
   /// Every adaptive budget derived from [availableBudgetBytes] is clamped
   /// to at least this — even right at the ceiling, a decode call still

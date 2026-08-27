@@ -88,6 +88,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
 
   int _memoryRssBytes = 0;
   Timer? _memoryTicker;
+  late final TextEditingController _memoryBudgetController;
 
   bool get _previewStarted => _previewLoading || _tileEngine != null || _regionEngine != null;
 
@@ -103,6 +104,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
       if (!mounted) return;
       setState(() => _memoryRssBytes = _MemoryMonitor.currentRssBytes());
     });
+    _memoryBudgetController = TextEditingController(text: '${_MemoryMonitor.totalBudgetBytes ~/ (1024 * 1024)}');
   }
 
   @override
@@ -113,7 +115,29 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
     _regionEngine?.dispose();
     _optimizeTicker?.cancel();
     _memoryTicker?.cancel();
+    _memoryBudgetController.dispose();
     super.dispose();
+  }
+
+  /// Applies a new memory budget (typed in MB) to [_MemoryMonitor], the
+  /// moment it parses as a positive number — every adaptive budget in the
+  /// app (band/chunk sizes, worker count for [_DisplayCache.build], the
+  /// live viewing engines' caches) reads [_MemoryMonitor.totalBudgetBytes]
+  /// fresh each time, so there's nothing else to wire up for a change here
+  /// to take effect. [_MemoryMonitor.setTotalBudgetBytes] clamps to a sane
+  /// range — if that changed what the user typed, the field is corrected
+  /// to show what's actually in effect rather than silently diverging from it.
+  void _onMemoryBudgetChanged(String text) {
+    final mb = int.tryParse(text.trim());
+    if (mb == null || mb <= 0) return;
+    setState(() => _MemoryMonitor.setTotalBudgetBytes(mb * 1024 * 1024));
+    final effectiveMb = _MemoryMonitor.totalBudgetBytes ~/ (1024 * 1024);
+    if (effectiveMb != mb) {
+      _memoryBudgetController.value = TextEditingValue(
+        text: '$effectiveMb',
+        selection: TextSelection.collapsed(offset: '$effectiveMb'.length),
+      );
+    }
   }
 
   /// Opens the file and reads its metadata only — cheap, header/IFD-only
@@ -403,6 +427,40 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                   const SizedBox(height: 8),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SizedBox(
+                        width: 160,
+                        child: TextField(
+                          controller: _memoryBudgetController,
+                          enabled: !_optimizing,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(
+                            labelText: 'Ngân sách bộ nhớ (MB)',
+                            isDense: true,
+                            border: OutlineInputBorder(),
+                          ),
+                          onChanged: _onMemoryBudgetChanged,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(
+                            _MemoryMonitor.isSupported
+                                ? 'Khuyên dùng: ${_MemoryMonitor.defaultTotalBudgetBytes ~/ (1024 * 1024)} MB — '
+                                      'bộ nhớ khả dụng hiện tại: ${_formatMemoryBytes(_MemoryMonitor.availableBudgetFor(_memoryRssBytes))}'
+                                : 'Khuyên dùng: ${_MemoryMonitor.defaultTotalBudgetBytes ~/ (1024 * 1024)} MB — '
+                                      'bộ nhớ khả dụng hiện tại: không đọc được trên nền tảng này',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,

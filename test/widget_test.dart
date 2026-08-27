@@ -76,18 +76,31 @@ Future<void> _viewImage(WidgetTester tester) async {
 /// waits for the real isolate work it kicks off — same runAsync() reasoning
 /// as [_viewImage].
 Future<void> _runOptimize(WidgetTester tester, String buttonLabel) async {
+  // The memory-budget field and its explanatory text above the optimize
+  // buttons can push them below the fold in the test's fixed-size
+  // viewport — scroll until the button itself is visible before tapping
+  // it. dragUntilVisible stops as soon as the button is merely *built*
+  // (which can still leave its tap-target center just past the viewport
+  // edge), so follow up with ensureVisible, which scrolls precisely enough
+  // to bring the whole widget inside the viewport.
+  await tester.dragUntilVisible(find.text(buttonLabel), find.byType(ListView), const Offset(0, -300));
+  await tester.ensureVisible(find.text(buttonLabel));
+  await tester.pump();
   await tester.runAsync(() => tester.tap(find.text(buttonLabel)));
   await tester.pump();
   await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 500)));
   await _pumpFrames(tester);
   // The result text lands right below the optimize buttons — below the
-  // fold in the test's fixed-size viewport once the live memory-use line
-  // above pushes it down a bit further, and a ListView doesn't keep an
-  // off-screen child built (same reasoning as the Gamma slider drag
-  // above). Scroll it into view before a caller asserts on it; clamps
-  // harmlessly at the bottom if there's nothing more to reveal.
-  await tester.drag(find.byType(ListView), const Offset(0, -300));
-  await tester.pump();
+  // fold in the test's fixed-size viewport once the memory-use line and
+  // budget field above push it down further, and a ListView doesn't keep
+  // an off-screen child built (same reasoning as the Gamma slider drag
+  // above). Scroll it into view before a caller asserts on it; several
+  // drags (each clamps harmlessly once there's nothing more to reveal) is
+  // more robust than guessing one distance that happens to be enough.
+  for (var i = 0; i < 4; i++) {
+    await tester.drag(find.byType(ListView), const Offset(0, -300));
+    await tester.pump();
+  }
 }
 
 void main() {

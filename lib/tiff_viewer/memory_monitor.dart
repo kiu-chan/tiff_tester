@@ -21,7 +21,7 @@ class _MemoryMonitor {
   /// for this app to know how loaded the rest of the machine actually is
   /// (see the class doc comment), so this is just a fixed, sane default the
   /// UI can offer and the user is free to override.
-  static const defaultTotalBudgetBytes = 512 * 1024 * 1024;
+  static const defaultTotalBudgetBytes = 2048 * 1024 * 1024;
 
   /// Smallest/largest value the UI lets a user set [totalBudgetBytes] to —
   /// below [_minTotalBudgetBytes] there's not enough headroom left for any

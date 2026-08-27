@@ -95,11 +95,9 @@ class _DisplayCache {
   /// per-band decoding is `package:tiff`'s own `TiffParallelDecoder`
   /// (`package:tiff/tiff_io.dart`), spread across a handful of worker
   /// isolates rather than done here one band at a time on a single core —
-  /// this app only decides *how much* memory/how many workers that's
-  /// allowed to use (see [_buildMemoryCapBytes]/[_workerCount] below),
-  /// which is exactly the budget/worker-count parameters
-  /// `TiffParallelDecoder.decodeBanded` takes as explicit arguments rather
-  /// than guessing at itself.
+  /// how much memory/how many workers that's allowed to use is picked by
+  /// `package:tiff`'s own `TiffAutoDecodeBudget.recommend` (reading actual
+  /// idle system memory and CPU count), not guessed by this app.
   ///
   /// [filePath] is needed alongside [page] because the actual decoding
   /// happens in separate worker isolates, each with its own freshly opened
@@ -132,34 +130,25 @@ class _DisplayCache {
     await File('${dir.path}/overview.rgba').writeAsBytes(overviewRgba);
     await File('${dir.path}/overview.meta').writeAsString('$overviewWidth,$overviewHeight');
 
-    // This app's own choice of memory budget (see _MemoryMonitor) and
-    // worker count — package:tiff's TiffChunkPlan/TiffParallelDecoder take
-    // both as plain parameters and do no memory-reading or CPU-detection
-    // of their own. maxBytesPerChunk is deliberately the *aggregate*
-    // budget, not divided by worker count: TiffChunkPlan picks chunk size
-    // first (tile/strip-aligned, to avoid TiffImage.decodeRegionRgba8
-    // redecoding the same underlying chunk once per band it overlaps), and
-    // recommendedWorkerCount derives how many such chunks can run at once
-    // within that same budget afterward — dividing the budget by worker
-    // count instead would shrink chunks below one tile/strip and
-    // reintroduce that redundant-redecode problem for a page whose tiles
-    // are large relative to the budget (a real whole-slide-image file,
-    // easily).
-    final aggregateBudgetBytes = _buildMemoryCapBytes();
-    final chunkPlan = TiffChunkPlan.forBudget(metadata, maxBytesPerChunk: aggregateBudgetBytes);
-    final workerCount = TiffChunkPlan.recommendedWorkerCount(
-      bytesPerChunk: chunkPlan.bytesPerChunk,
-      aggregateBudgetBytes: aggregateBudgetBytes,
-      cpuCount: math.max(1, math.min(4, Platform.numberOfProcessors - 1)),
-    );
+    // package:tiff picks its own chunk/worker sizing here (via
+    // TiffAutoDecodeBudget), reading actual idle system memory and CPU
+    // count rather than this app guessing a fixed number — see that
+    // class's doc comment for why a fixed number is always either too
+    // small (leaves a big multi-core machine mostly idle) or too large
+    // (risks the exact kind of system-wide low-memory situation
+    // TiffAutoDecodeBudget's reserve/double-buffer margins exist to avoid).
+    // Left at the library default rather than pushed higher here: a
+    // "one-off build has the machine to itself" assumption doesn't hold on
+    // a real dev machine already running a browser/IDE/etc. alongside it.
+    final budget = TiffAutoDecodeBudget.recommend(metadata);
 
     var completedBands = 0;
     await TiffParallelDecoder.decodeBanded(
       filePath: filePath,
       pageIndex: 0,
       bandHeight: bandHeight,
-      maxBytesPerChunk: aggregateBudgetBytes,
-      workerCount: workerCount,
+      maxBytesPerChunk: budget.maxBytesPerChunk,
+      workerCount: budget.workerCount,
       setUpIsolate: TiffImageAdapter.enableJpegSupport,
       onBand: (band) {
         File('${dir.path}/band_${band.y ~/ bandHeight}.rgba').writeAsBytesSync(band.rgba);
@@ -178,19 +167,6 @@ class _DisplayCache {
       }),
     );
   }
-
-  /// Aggregate ceiling for [build]'s decode work — see the class doc
-  /// comment on [_MemoryMonitor] for what "aggregate" means here (the sum
-  /// across every concurrently-running chunk, not a per-chunk number). A
-  /// one-off build gets a much bigger slice of the budget than the
-  /// interactive viewing paths (75% vs. a few percent) — it isn't sharing
-  /// that memory with a live view at the same time, and the whole point is
-  /// getting as close to one-decode-per-tile-row as headroom allows.
-  static int _buildMemoryCapBytes() => _MemoryMonitor.budgetFor(
-    fraction: 0.75,
-    minBytes: 64 * 1024 * 1024,
-    maxBytes: 768 * 1024 * 1024,
-  );
 
   Future<Uint8List> readOverview() => File('${dir.path}/overview.rgba').readAsBytes();
 

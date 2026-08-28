@@ -7,6 +7,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 import 'package:tiff/tiff.dart';
 import 'package:tiff/tiff_image_adapter.dart';
@@ -235,7 +236,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
       _optimizeProgress = 0;
       _optimizeCompletedSteps = null;
       _optimizeTotalSteps = null;
-      _optimizeStepUnit = choice == 'cache' ? 'band' : 'mức';
+      _optimizeStepUnit = choice.startsWith('cache') ? 'band' : 'mức';
       _optimizeStopwatch = stopwatch;
       _optimizeResult = null;
     });
@@ -273,9 +274,30 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
         );
         if (error == null) successMessage = 'Đã lưu file tối ưu tại:\n$outputPath';
         break;
-      case 'cache':
-        error = await _runDisplayCacheBuild(widget.filePath, onProgress: onProgress);
-        if (error == null) successMessage = 'Đã tạo cache hiển thị riêng cho ứng dụng — mở lại file này sẽ mượt hơn.';
+      case 'cache_raw':
+      case 'cache_deflate':
+      case 'cache_jpeg':
+        final format = switch (choice) {
+          'cache_deflate' => _DisplayCacheFormat.deflateRgb,
+          'cache_jpeg' => _DisplayCacheFormat.jpeg,
+          _ => _DisplayCacheFormat.rawRgba,
+        };
+        error = await _runDisplayCacheBuild(widget.filePath, format: format, onProgress: onProgress);
+        if (error == null) {
+          successMessage = 'Đã tạo cache hiển thị riêng cho ứng dụng — mở lại file này sẽ mượt hơn.';
+          // Best-effort: reads the manifest just written back to report its
+          // actual on-disk size next to the source file's, so the success
+          // message shows a real number rather than just "done".
+          final cache = await _DisplayCache.open(widget.filePath);
+          if (cache != null) {
+            final sourceBytes = _fileSizeBytes;
+            final ratio = sourceBytes != null && sourceBytes > 0 ? cache.cacheSizeBytes / sourceBytes : null;
+            successMessage +=
+                '\nDung lượng cache: ${_formatMemoryBytes(cache.cacheSizeBytes)}'
+                '${ratio != null ? ' (${ratio.toStringAsFixed(1)}x file gốc)' : ''}'
+                '\nVị trí: ${cache.dir.path}';
+          }
+        }
         break;
     }
 
@@ -486,10 +508,24 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                         ),
                       ),
                       Tooltip(
-                        message: 'Không tạo file mới — chỉ tăng tốc lần mở file này tiếp theo',
+                        message: 'Cache RGBA thô — lớn nhất (~4x file gốc trở lên), đọc nhanh nhất, không mất chất lượng',
                         child: OutlinedButton(
-                          onPressed: _optimizing ? null : () => _runOptimize('cache', 'Cache riêng cho app này'),
-                          child: const Text('Cache riêng cho app này'),
+                          onPressed: _optimizing ? null : () => _runOptimize('cache_raw', 'Cache (RGBA thô)'),
+                          child: const Text('Cache (RGBA thô)'),
+                        ),
+                      ),
+                      Tooltip(
+                        message: 'Cache nén Deflate — nhỏ hơn ~2-4x so với RGBA thô, không mất chất lượng, đọc chậm hơn một chút',
+                        child: OutlinedButton(
+                          onPressed: _optimizing ? null : () => _runOptimize('cache_deflate', 'Cache (nén Deflate)'),
+                          child: const Text('Cache (nén Deflate)'),
+                        ),
+                      ),
+                      Tooltip(
+                        message: 'Cache nén JPEG — nhỏ nhất, gần bằng file gốc, mất chất lượng nhẹ và đọc chậm hơn (giải mã JPEG)',
+                        child: OutlinedButton(
+                          onPressed: _optimizing ? null : () => _runOptimize('cache_jpeg', 'Cache (nén JPEG)'),
+                          child: const Text('Cache (nén JPEG)'),
                         ),
                       ),
                     ],

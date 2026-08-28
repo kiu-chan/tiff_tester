@@ -98,8 +98,8 @@ Future<String?> _runDisplayOptimization({
 /// [_decodePreviewRgba]'s callers elsewhere in this app: a single
 /// request/response call can't report progress mid-flight. Sends a final
 /// `true` on success or a `String` on failure.
-Future<void> _cacheBuildIsolateEntry((SendPort, String, String) args) async {
-  final (sendPort, filePath, dirPath) = args;
+Future<void> _cacheBuildIsolateEntry((SendPort, String, String, int, int) args) async {
+  final (sendPort, filePath, dirPath, formatIndex, jpegQuality) = args;
   try {
     TiffImageAdapter.enableJpegSupport();
     final document = decodeTiffFile(File(filePath));
@@ -108,6 +108,8 @@ Future<void> _cacheBuildIsolateEntry((SendPort, String, String) args) async {
         document.images.first,
         filePath,
         dirPath,
+        format: _DisplayCacheFormat.values[formatIndex],
+        jpegQuality: jpegQuality,
         onProgress: (p) => sendPort.send((p.completedBands, p.totalBands, p.fraction)),
       );
       sendPort.send(true);
@@ -122,7 +124,12 @@ Future<void> _cacheBuildIsolateEntry((SendPort, String, String) args) async {
 /// Runs [_cacheBuildIsolateEntry] in a throwaway isolate, forwarding its
 /// progress updates to [onProgress]. Returns `null` on success, an error
 /// message otherwise.
-Future<String?> _runDisplayCacheBuild(String filePath, {void Function(_StepProgress)? onProgress}) async {
+Future<String?> _runDisplayCacheBuild(
+  String filePath, {
+  _DisplayCacheFormat format = _DisplayCacheFormat.rawRgba,
+  int jpegQuality = 85,
+  void Function(_StepProgress)? onProgress,
+}) async {
   final String dirPath;
   try {
     dirPath = await _DisplayCache.resolveDirPath(filePath);
@@ -132,7 +139,7 @@ Future<String?> _runDisplayCacheBuild(String filePath, {void Function(_StepProgr
 
   final receivePort = ReceivePort();
   try {
-    await Isolate.spawn(_cacheBuildIsolateEntry, (receivePort.sendPort, filePath, dirPath));
+    await Isolate.spawn(_cacheBuildIsolateEntry, (receivePort.sendPort, filePath, dirPath, format.index, jpegQuality));
   } catch (e) {
     receivePort.close();
     return '$e';

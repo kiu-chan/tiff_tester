@@ -58,14 +58,18 @@ List<_PyramidLevel> _buildPyramidLevels(TiffDocument document) {
   return levels;
 }
 
-/// Raw per-pixel memory a decode band actually costs while it's alive:
-/// the underlying [TiffRasterBuffer.samples] is a `List<int>`, which the
-/// Dart VM stores as one machine word (8 bytes) per element regardless of
-/// the sample's actual bit depth — not [TiffImageMetadata.bitsPerSample]
-/// bits per sample as the on-disk encoding would suggest. Plus the RGBA8
-/// conversion of that same band (4 bytes/pixel), which is briefly alive
-/// alongside it.
-int _bandBytesPerPixel(TiffImageMetadata metadata) => metadata.samplesPerPixel * 8 + 4;
+/// Raw per-pixel memory a decode band actually costs while it's alive: the
+/// underlying `TiffRasterBuffer.samples` — a typed-data list picked by bit
+/// depth (`Uint8List`/`Uint16List`/`Uint32List`; see package:tiff's
+/// `allocateSampleBuffer`), not a flat 8-bytes-per-sample `List<int>` the
+/// way it once was — plus the RGBA8 conversion of that same band (4
+/// bytes/pixel), which is briefly alive alongside it. Mirrors package:tiff's
+/// own `TiffChunkPlan`'s identical per-sample bucketing.
+int _bandBytesPerPixel(TiffImageMetadata metadata) {
+  final maxBits = metadata.bitsPerSample.isEmpty ? 8 : metadata.bitsPerSample.reduce(math.max);
+  final bytesPerSample = maxBits <= 8 ? 1 : (maxBits <= 16 ? 2 : 4);
+  return metadata.samplesPerPixel * bytesPerSample + 4;
+}
 
 int _tileGridArea(TiffImageMetadata m) {
   final tw = m.tileWidth!;

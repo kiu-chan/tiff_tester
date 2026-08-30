@@ -1,11 +1,14 @@
 part of '../tiff_viewer_page.dart';
 
-/// A concrete "N of M" progress update forwarded across an isolate
-/// boundary — a plain positional tuple (matching this app's other isolate
-/// message types) rather than [TiffOptimizeProgress]/`_CacheBuildProgress`
-/// directly, so both isolate entries below can share one wire shape and one
-/// [_runOptimize] callback signature regardless of which strategy is
-/// running.
+/// A concrete "N of M" progress update forwarded across an isolate boundary
+/// for [_runDisplayCacheBuild] — a plain positional tuple (matching this
+/// app's other isolate message types) rather than `_CacheBuildProgress`
+/// directly. [_runDisplayOptimization]/[_runPyramidCacheBuild] instead
+/// forward `package:tiff`'s own [TiffOptimizeProgress] record as-is (records
+/// — and the [TiffOptimizeStage] enum inside this one — cross an
+/// `Isolate.spawn`-spawned isolate boundary the same way this tuple always
+/// has), since flattening its stage/level/step fields into a positional
+/// tuple here would just be lossy busywork undone one call frame later.
 typedef _StepProgress = (int completed, int total, double fraction);
 
 /// Entry point for the one-shot isolate behind [_runDisplayOptimization]:
@@ -13,11 +16,10 @@ typedef _StepProgress = (int completed, int total, double fraction);
 /// [TiffDocument]), runs `TiffDisplayOptimizer.optimize`, and writes the
 /// result to [outputPath] itself — sending the (potentially large) encoded
 /// bytes back over a [SendPort] would cost an extra copy for no benefit,
-/// since a background isolate can do file I/O directly. Streams concrete
-/// step progress back as a [_StepProgress] via `optimize`'s own
-/// `onProgress` (one call per pyramid rung, plus a final call once the file
-/// is actually written — held back a beat from `optimize`'s own "encoded"
-/// signal, which fires before the write below) — same reasoning as
+/// since a background isolate can do file I/O directly. Streams
+/// [TiffOptimizeProgress] updates back as `optimize` reports them, holding
+/// back the very last one (the only one with `fraction == 1.0`) until after
+/// the write below actually happens — same reasoning as
 /// [_cacheBuildIsolateEntry]. Sends a final `true` on success or a `String`
 /// on failure.
 void _optimizeIsolateEntry((SendPort, String, String, int, int, int) args) {
@@ -34,14 +36,12 @@ void _optimizeIsolateEntry((SendPort, String, String, int, int, int) args) {
         minPyramidDimension: minPyramidDimension,
         onProgress: (p) {
           lastProgress = p;
-          if (p.completedSteps < p.totalSteps) {
-            sendPort.send((p.completedSteps, p.totalSteps, p.fraction));
-          }
+          if (p.fraction < 1.0) sendPort.send(p);
         },
       );
       File(outputPath).writeAsBytesSync(bytes);
       final last = lastProgress;
-      if (last != null) sendPort.send((last.completedSteps, last.totalSteps, 1.0));
+      if (last != null) sendPort.send(last);
       sendPort.send(true);
     } finally {
       document.close();
@@ -60,7 +60,7 @@ Future<String?> _runDisplayOptimization({
   required TiffOptimizationMode mode,
   int tileSize = 512,
   int minPyramidDimension = 512,
-  void Function(_StepProgress)? onProgress,
+  void Function(TiffOptimizeProgress)? onProgress,
 }) async {
   final receivePort = ReceivePort();
   try {
@@ -75,7 +75,7 @@ Future<String?> _runDisplayOptimization({
 
   String? result;
   await for (final message in receivePort) {
-    if (message is _StepProgress) {
+    if (message is TiffOptimizeProgress) {
       onProgress?.call(message);
     } else if (message is bool) {
       break;

@@ -77,9 +77,13 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
   bool _optimizing = false;
   String? _optimizingLabel;
   double? _optimizeProgress;
-  int? _optimizeCompletedSteps;
-  int? _optimizeTotalSteps;
-  String? _optimizeStepUnit; // 'mức' (pyramid rung) or 'band', for display
+  // A ready-to-show status line built directly in the progress callback
+  // (see _describeOptimizeProgress/_runOptimize's onCacheProgress) — e.g.
+  // "Đang nén tile 340/512 (mức 2/6)" — rather than raw step counts kept
+  // here and formatted later, since the two progress sources this page
+  // drives (TiffDisplayOptimizer's per-stage TiffOptimizeProgress, and
+  // _DisplayCache's simpler band-only progress) don't share one shape.
+  String? _optimizeStatusLine;
   Stopwatch? _optimizeStopwatch;
   Timer? _optimizeTicker;
   String? _optimizeResult;
@@ -291,29 +295,40 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
       _optimizing = true;
       _optimizingLabel = label;
       _optimizeProgress = 0;
-      _optimizeCompletedSteps = null;
-      _optimizeTotalSteps = null;
-      _optimizeStepUnit = choice.startsWith('cache') ? 'band' : 'mức';
+      _optimizeStatusLine = null;
       _optimizeStopwatch = stopwatch;
       _optimizeResult = null;
     });
-    // Ticks the elapsed-time display while work is in flight — the isolate
-    // itself only reports progress step by step (not continuously), so
-    // without this the "Đã chạy Xs" text would only update on step
-    // boundaries instead of counting up smoothly.
+    // Ticks the elapsed-time display while work is in flight — progress
+    // updates themselves arrive in bursts (many per second while tiles are
+    // being compressed, none at all during a single long decode/downsample
+    // step), so without this the "đã chạy Xs" text would stall between
+    // updates instead of counting up smoothly.
     _optimizeTicker = Timer.periodic(const Duration(milliseconds: 200), (_) {
       if (mounted) setState(() {});
     });
 
-    void onProgress(_StepProgress p) {
+    // Drives tiledPyramid/tiledOnly/pyramid_cache — every strategy built on
+    // TiffDisplayOptimizer, which now reports real "which stage, which
+    // rung, which tile/band" progress (see TiffOptimizeProgress) instead of
+    // one opaque step per rung.
+    void onOptimizeProgress(TiffOptimizeProgress p) {
+      if (!mounted) return;
+      setState(() {
+        _optimizeProgress = p.fraction;
+        _optimizeStatusLine = _describeOptimizeProgress(p);
+      });
+    }
+
+    // Drives cache_raw/cache_deflate/cache_jpeg — _DisplayCache's own,
+    // simpler "band N of M" progress, unrelated to TiffDisplayOptimizer.
+    void onCacheProgress(_StepProgress p) {
       final (completed, total, fraction) = p;
-      if (mounted) {
-        setState(() {
-          _optimizeCompletedSteps = completed;
-          _optimizeTotalSteps = total;
-          _optimizeProgress = fraction;
-        });
-      }
+      if (!mounted) return;
+      setState(() {
+        _optimizeProgress = fraction;
+        _optimizeStatusLine = 'Đang mã hoá dải $completed/$total';
+      });
     }
 
     String? error;
@@ -329,7 +344,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
           mode: mode,
           tileSize: _positiveIntOrDefault(_tileSizeController.text, 512),
           minPyramidDimension: _positiveIntOrDefault(_minPyramidDimensionController.text, 512),
-          onProgress: onProgress,
+          onProgress: onOptimizeProgress,
         );
         if (error == null) successMessage = 'Đã lưu file tối ưu tại:\n$outputPath';
         break;
@@ -338,7 +353,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
           widget.filePath,
           tileSize: _positiveIntOrDefault(_tileSizeController.text, 512),
           minPyramidDimension: _positiveIntOrDefault(_minPyramidDimensionController.text, 512),
-          onProgress: onProgress,
+          onProgress: onOptimizeProgress,
         );
         if (error == null) {
           successMessage =
@@ -365,7 +380,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
           'cache_jpeg' => _DisplayCacheFormat.jpeg,
           _ => _DisplayCacheFormat.rawRgba,
         };
-        error = await _runDisplayCacheBuild(widget.filePath, format: format, onProgress: onProgress);
+        error = await _runDisplayCacheBuild(widget.filePath, format: format, onProgress: onCacheProgress);
         if (error == null) {
           successMessage = 'Đã tạo cache hiển thị riêng cho ứng dụng — mở lại file này sẽ mượt hơn.';
           // Best-effort: reads the manifest just written back to report its
@@ -393,30 +408,45 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
       _optimizing = false;
       _optimizingLabel = null;
       _optimizeProgress = null;
-      _optimizeCompletedSteps = null;
-      _optimizeTotalSteps = null;
-      _optimizeStepUnit = null;
+      _optimizeStatusLine = null;
       _optimizeStopwatch = null;
       _optimizeResult = successMessage != null ? '$successMessage (${elapsed}s)' : error;
       _optimizeResultIsError = error != null;
     });
   }
 
+  /// Turns one [TiffOptimizeProgress] update into a ready-to-show Vietnamese
+  /// status line — the level/band/tile figures it carries are only
+  /// meaningful once translated like this, so this lives right next to
+  /// where progress is consumed rather than in the `tiff` package itself,
+  /// which stays UI- and language-agnostic.
+  String _describeOptimizeProgress(TiffOptimizeProgress p) {
+    final level = 'mức ${p.level + 1}/${p.levelCount}';
+    return switch (p.stage) {
+      TiffOptimizeStage.decoding => p.stepCount > 1
+          ? 'Đang giải mã ảnh gốc — dải ${p.stepIndex}/${p.stepCount}'
+          : 'Đang giải mã ảnh gốc',
+      TiffOptimizeStage.downsampling => 'Đang thu nhỏ $level',
+      TiffOptimizeStage.encoding => 'Đang nén $level — tile ${p.stepIndex}/${p.stepCount}',
+    };
+  }
+
   /// Concrete, live-updating status text for whichever optimize strategy is
-  /// running — step counts and a percentage once the first progress update
-  /// arrives, elapsed real time throughout (ticked by [_optimizeTicker]
-  /// independently of progress updates, so it counts up smoothly even
-  /// between steps).
+  /// running — a per-stage status line (see [_describeOptimizeProgress]/
+  /// `onCacheProgress` in [_runOptimize]) and a percentage once the first
+  /// progress update arrives, elapsed real time throughout (ticked by
+  /// [_optimizeTicker] independently of progress updates, so it counts up
+  /// smoothly even during a single long-running step with no updates of its
+  /// own).
   String _optimizeStatusText() {
     final elapsedSeconds = ((_optimizeStopwatch?.elapsedMilliseconds ?? 0) / 1000).toStringAsFixed(1);
-    final completed = _optimizeCompletedSteps;
-    final total = _optimizeTotalSteps;
+    final line = _optimizeStatusLine;
     final progress = _optimizeProgress;
-    if (completed == null || total == null || progress == null) {
+    if (line == null || progress == null) {
       return 'Đang chuẩn bị... ($_optimizingLabel, đã chạy ${elapsedSeconds}s)';
     }
     final percent = (progress * 100).toStringAsFixed(0);
-    return 'Đang tối ưu... $_optimizeStepUnit $completed/$total ($percent%) — đã chạy ${elapsedSeconds}s';
+    return '$line ($percent%) — đã chạy ${elapsedSeconds}s';
   }
 
   /// Inserts [suffix] before [path]'s extension (`foo.tiff` -> `foo.tiled.tiff`),

@@ -137,10 +137,13 @@ class _PyramidCache {
   /// No size limit: below [maxDirectDecodePixels] this is
   /// `TiffDisplayOptimizer.optimize`'s `pyramidLevelsOnly` mode directly
   /// (one whole-page RGBA8 decode, same as any other small page); above it,
-  /// `TiffDisplayOptimizer.optimizeLargeSourcePyramidLevels` derives the
-  /// first rung via a bounded-memory banded downsample straight from the
-  /// source instead, so this never needs the whole page decoded in memory
-  /// at once regardless of how large it is.
+  /// `TiffDisplayOptimizer.optimizeLargeSourcePyramidLevelsParallel` derives
+  /// the first rung via a bounded-memory banded downsample straight from
+  /// the source instead — spread across `TiffAutoDecodeBudget.recommend`'s
+  /// worker count, the same idle-memory/CPU-count-aware sizing
+  /// `_DisplayCache.build` already uses — so this never needs the whole
+  /// page decoded in memory (or on a single core) at once regardless of how
+  /// large it is.
   static Future<void> build(
     TiffImage page,
     String filePath,
@@ -156,28 +159,38 @@ class _PyramidCache {
     TiffOptimizeProgress? lastProgress;
     void forwardProgress(TiffOptimizeProgress p) {
       lastProgress = p;
-      if (p.completedSteps < p.totalSteps) onProgress?.call(p);
+      if (p.fraction < 1.0) onProgress?.call(p);
     }
 
     final metadata = page.metadata;
-    final bytes = metadata.width * metadata.height <= maxDirectDecodePixels
-        ? TiffDisplayOptimizer.optimize(
-            page,
-            mode: TiffOptimizationMode.pyramidLevelsOnly,
-            tileSize: tileSize,
-            minPyramidDimension: minPyramidDimension,
-            onProgress: forwardProgress,
-          )
-        : TiffDisplayOptimizer.optimizeLargeSourcePyramidLevels(
-            page,
-            tileSize: tileSize,
-            minPyramidDimension: minPyramidDimension,
-            maxDirectDecodePixels: maxDirectDecodePixels,
-            onProgress: forwardProgress,
-          );
-    // optimize()'s totalSteps is levelCount + 1 (the +1 being its own final
-    // encode step, already folded into `bytes` by the time we get here).
-    final levelCount = math.max(1, (lastProgress?.totalSteps ?? 2) - 1);
+    final Uint8List bytes;
+    if (metadata.width * metadata.height <= maxDirectDecodePixels) {
+      bytes = TiffDisplayOptimizer.optimize(
+        page,
+        mode: TiffOptimizationMode.pyramidLevelsOnly,
+        tileSize: tileSize,
+        minPyramidDimension: minPyramidDimension,
+        onProgress: forwardProgress,
+      );
+    } else {
+      // Spreads the first rung's (otherwise dominant) banded decode across
+      // several isolates instead of one at a time — same
+      // idle-memory/CPU-count-aware sizing _DisplayCache.build already uses
+      // for its own parallel decode, rather than a number guessed here.
+      final budget = TiffAutoDecodeBudget.recommend(metadata);
+      bytes = await TiffDisplayOptimizer.optimizeLargeSourcePyramidLevelsParallel(
+        page,
+        filePath,
+        tileSize: tileSize,
+        minPyramidDimension: minPyramidDimension,
+        maxDirectDecodePixels: maxDirectDecodePixels,
+        maxBandBytes: budget.maxBytesPerChunk,
+        workerCount: budget.workerCount,
+        setUpIsolate: TiffImageAdapter.enableJpegSupport,
+        onProgress: forwardProgress,
+      );
+    }
+    final levelCount = lastProgress?.levelCount ?? 1;
 
     await File('${dir.path}/$_levelsFileName').writeAsBytes(bytes);
 
@@ -194,9 +207,7 @@ class _PyramidCache {
     );
 
     final last = lastProgress;
-    if (last != null) {
-      onProgress?.call((completedSteps: last.completedSteps, totalSteps: last.totalSteps, fraction: 1.0));
-    }
+    if (last != null) onProgress?.call(last);
   }
 }
 
@@ -220,7 +231,7 @@ Future<void> _pyramidCacheIsolateEntry((SendPort, String, String, int, int) args
         dirPath,
         tileSize: tileSize,
         minPyramidDimension: minPyramidDimension,
-        onProgress: (p) => sendPort.send((p.completedSteps, p.totalSteps, p.fraction)),
+        onProgress: sendPort.send,
       );
       sendPort.send(true);
     } finally {
@@ -238,7 +249,7 @@ Future<String?> _runPyramidCacheBuild(
   String filePath, {
   int tileSize = 512,
   int minPyramidDimension = 512,
-  void Function(_StepProgress)? onProgress,
+  void Function(TiffOptimizeProgress)? onProgress,
 }) async {
   final String dirPath;
   try {
@@ -260,7 +271,7 @@ Future<String?> _runPyramidCacheBuild(
 
   String? result;
   await for (final message in receivePort) {
-    if (message is _StepProgress) {
+    if (message is TiffOptimizeProgress) {
       onProgress?.call(message);
     } else if (message is bool) {
       break;

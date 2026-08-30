@@ -15,15 +15,22 @@ part of '../tiff_viewer_page.dart';
 /// on its own). Replies are `(requestId, rgba, width, height)` on success or
 /// `(requestId, error)` on failure — always tagged with the request's id so
 /// the main isolate can match a reply back to what it was for.
-void _tileWorkerEntry((SendPort, String) args) {
-  final (mainSendPort, filePath) = args;
+///
+/// [pyramidCachePath], if non-null, is opened and folded into [levels] via
+/// [_buildPyramidLevels]'s `extraLevelsDocument` — must be the exact same
+/// path [_TileEngine] itself was constructed with, so this worker's own
+/// [levels] lines up index-for-index with the main isolate's copy (see
+/// [_buildPyramidLevels]'s doc comment).
+void _tileWorkerEntry((SendPort, String, String?) args) {
+  final (mainSendPort, filePath, pyramidCachePath) = args;
   TiffImageAdapter.enableJpegSupport();
 
   final TiffDocument document;
   final List<_PyramidLevel> levels;
   try {
     document = decodeTiffFile(File(filePath));
-    levels = _buildPyramidLevels(document);
+    final extraLevelsDocument = pyramidCachePath == null ? null : decodeTiffFile(File(pyramidCachePath));
+    levels = _buildPyramidLevels(document, extraLevelsDocument: extraLevelsDocument);
   } catch (e) {
     mainSendPort.send('$e');
     return;
@@ -87,6 +94,12 @@ class _TileEngine extends ChangeNotifier {
   static const _prefetchMarginTiles = 0.75;
 
   final String filePath;
+
+  /// Same sidecar file [_PyramidCache] built, if [_openPreview] found one —
+  /// forwarded verbatim to every worker isolate (see [_tileWorkerEntry]) so
+  /// each independently reconstructs the identical [levels] list this
+  /// instance was constructed with.
+  final String? pyramidCachePath;
   final List<_PyramidLevel> levels;
 
   /// One isolate per available core (minus one, left for the UI thread),
@@ -111,7 +124,7 @@ class _TileEngine extends ChangeNotifier {
   Rect? _lastVisibleRect;
   double _lastScale = 1;
 
-  _TileEngine({required this.filePath, required this.levels});
+  _TileEngine({required this.filePath, required this.levels, this.pyramidCachePath});
 
   Object? get fatalError => _fatalError;
   bool get isWorking => _workers.any((w) => w.busy) || _pending.isNotEmpty;
@@ -130,7 +143,7 @@ class _TileEngine extends ChangeNotifier {
     final handshake = Completer<void>();
     receivePort.listen((message) => _onMessage(worker, message, handshake));
     try {
-      worker.isolate = await Isolate.spawn(_tileWorkerEntry, (receivePort.sendPort, filePath));
+      worker.isolate = await Isolate.spawn(_tileWorkerEntry, (receivePort.sendPort, filePath, pyramidCachePath));
     } catch (e) {
       _fatalError = e;
       notifyListeners();

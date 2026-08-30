@@ -66,6 +66,12 @@ Future<void> _openViewer(WidgetTester tester, String filePath) async {
 /// The tap itself must run inside runAsync() for the same reason as the
 /// real I/O above — it kicks off a real Isolate.spawn + message exchange.
 Future<void> _viewImage(WidgetTester tester) async {
+  // If a previous step (e.g. _runOptimize) scrolled the page down, "Xem
+  // ảnh" — which always sits near the top, above the optimize section — may
+  // no longer be built in the virtualized ListView. Scroll back up first so
+  // the tap below can actually find it regardless of what ran before this.
+  await tester.drag(find.byType(ListView), const Offset(0, 2000));
+  await tester.pump();
   await tester.runAsync(() => tester.tap(find.text('Xem ảnh')));
   await tester.pump();
   await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 300)));
@@ -215,6 +221,11 @@ void main() {
       find.byType(ListView),
       const Offset(0, -300),
     );
+    // dragUntilVisible stops as soon as the button is merely *built*, which
+    // can still leave its tap-target center just past the viewport edge
+    // (same reasoning as _runOptimize's own ensureVisible follow-up above).
+    await tester.ensureVisible(find.text('Round-trip write test (force BigTIFF, Deflate)'));
+    await tester.pump();
 
     // The tap must happen inside runAsync() too: it triggers _runWriteTest(),
     // which does real dart:io work (getTemporaryDirectory, File read/write)
@@ -260,7 +271,7 @@ void main() {
     final path = _writeSampleTiff(tempDir, width: 16, height: 16);
     await _openViewer(tester, path);
 
-    await _runOptimize(tester, 'Cache riêng cho app này');
+    await _runOptimize(tester, 'Cache (RGBA thô)');
 
     expect(find.textContaining('failed'), findsNothing);
     expect(find.textContaining('Đã tạo cache hiển thị'), findsOneWidget);
@@ -305,7 +316,7 @@ void main() {
     File(path).writeAsBytesSync(bytes);
 
     await _openViewer(tester, path);
-    await _runOptimize(tester, 'Cache riêng cho app này');
+    await _runOptimize(tester, 'Cache (RGBA thô)');
 
     expect(find.textContaining('failed'), findsNothing);
     expect(find.textContaining('Đã tạo cache hiển thị'), findsOneWidget);
@@ -314,5 +325,92 @@ void main() {
     expect(find.textContaining('failed'), findsNothing);
     final mainImageFinder = find.byKey(const Key('mainImage'));
     expect(mainImageFinder, findsOneWidget);
+  });
+
+  testWidgets('optimize: pyramid cache builds no new file and a later open still works', (tester) async {
+    // Needs to be tiled (unlike the other fixtures above) — _PyramidCache
+    // only ever gets consulted on the _TileEngine branch of _openPreview.
+    const width = 32;
+    const height = 32;
+    final samples = List<int>.generate(width * height * 3, (i) => i % 256);
+    final spec = TiffImageSpec(
+      width: width,
+      height: height,
+      samplesPerPixel: 3,
+      bitsPerSample: 8,
+      photometric: TiffPhotometric.rgb,
+      samples: samples,
+      tileWidth: 16,
+      tileLength: 16,
+    );
+    final bytes = Uint8List.fromList(TiffEncoder.encode([spec]));
+    final path = '${tempDir.path}/tiled_sample.tiff';
+    File(path).writeAsBytesSync(bytes);
+
+    await _openViewer(tester, path);
+    // Shrink minPyramidDimension below the default 512 so this 32x32
+    // fixture actually has a smaller rung to build — pyramidLevelsOnly
+    // throws instead of silently no-op'ing when there'd be nothing to
+    // build, unlike tiledPyramid/tiledOnly (see the tiff package's own
+    // TiffDisplayOptimizer tests).
+    await tester.enterText(find.byKey(const Key('minPyramidDimensionField')), '8');
+    await tester.pump();
+    await _runOptimize(tester, 'Cache pyramid levels');
+
+    expect(find.textContaining('failed'), findsNothing);
+    expect(find.textContaining('Đã cache thêm các mức pyramid'), findsOneWidget);
+    // Unlike "Tile hoá + pyramid"/"Chỉ tile hoá", no sibling .tiff file next
+    // to the source is created — only the sidecar .pyramidcache directory.
+    expect(File('${tempDir.path}/tiled_sample.tiled.tiff').existsSync(), isFalse);
+    expect(File('${tempDir.path}/tiled_sample.pyramid.tiff').existsSync(), isFalse);
+    expect(File(path).lengthSync(), bytes.length); // source itself untouched
+
+    final cacheDir = Directory('$path.pyramidcache');
+    expect(cacheDir.existsSync(), isTrue);
+    expect(File('${cacheDir.path}/levels.tif').existsSync(), isTrue);
+
+    // Viewing now should transparently fold the cached rungs in and still work.
+    await _viewImage(tester);
+    expect(find.textContaining('failed'), findsNothing);
+    final mainImageFinder = find.byKey(const Key('mainImage'));
+    expect(mainImageFinder, findsOneWidget);
+  });
+
+  testWidgets('optimize: pyramid cache and app display cache do not clobber each other', (tester) async {
+    // Regression test: _PyramidCache used to share _DisplayCache's own
+    // .tiffcache sidecar directory, which _DisplayCache.build unconditionally
+    // deletes and recreates on every rebuild — building one cache after the
+    // other would silently wipe out whichever was built first.
+    const width = 32;
+    const height = 32;
+    final samples = List<int>.generate(width * height * 3, (i) => i % 256);
+    final spec = TiffImageSpec(
+      width: width,
+      height: height,
+      samplesPerPixel: 3,
+      bitsPerSample: 8,
+      photometric: TiffPhotometric.rgb,
+      samples: samples,
+      tileWidth: 16,
+      tileLength: 16,
+    );
+    final bytes = Uint8List.fromList(TiffEncoder.encode([spec]));
+    final path = '${tempDir.path}/tiled_sample.tiff';
+    File(path).writeAsBytesSync(bytes);
+
+    await _openViewer(tester, path);
+    await tester.enterText(find.byKey(const Key('minPyramidDimensionField')), '8');
+    await tester.pump();
+    await _runOptimize(tester, 'Cache pyramid levels');
+    expect(find.textContaining('failed'), findsNothing);
+
+    final pyramidLevelsFile = File('$path.pyramidcache/levels.tif');
+    expect(pyramidLevelsFile.existsSync(), isTrue);
+
+    // Building the app display cache afterwards must not touch the pyramid
+    // cache's own (separate) sidecar directory.
+    await _runOptimize(tester, 'Cache (RGBA thô)');
+    expect(find.textContaining('failed'), findsNothing);
+    expect(pyramidLevelsFile.existsSync(), isTrue);
   });
 }

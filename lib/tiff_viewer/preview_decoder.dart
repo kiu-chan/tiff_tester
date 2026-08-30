@@ -35,8 +35,17 @@ class _PyramidLevel {
 /// all, so a page only counts as a candidate if its aspect ratio is close
 /// to page 0's — full pyramid levels match closely; unrelated images
 /// generally don't.
-List<_PyramidLevel> _buildPyramidLevels(TiffDocument document) {
-  final images = document.images;
+///
+/// [extraLevelsDocument], if given, is a separate, already-opened document
+/// (see [_PyramidCache]) whose pages are folded in as additional candidate
+/// rungs alongside [document]'s own — used when [document] itself has no
+/// native pyramid but a sidecar [_PyramidCache] built one instead. Both
+/// isolates that call this (the main isolate opening the preview, and each
+/// [_TileEngine] worker via [_tileWorkerEntry]) must be given the same
+/// [extraLevelsDocument] (or lack of one) so every isolate computes the
+/// exact same level list/order — [_TileEngine] indexes rungs positionally.
+List<_PyramidLevel> _buildPyramidLevels(TiffDocument document, {TiffDocument? extraLevelsDocument}) {
+  final images = [...document.images, ...?extraLevelsDocument?.images];
   final baseAspect = images.first.metadata.width / images.first.metadata.height;
   final levels = <_PyramidLevel>[];
   for (final img in images) {

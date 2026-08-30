@@ -12,6 +12,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:tiff/tiff.dart';
 import 'package:tiff/tiff_image_adapter.dart';
 import 'package:tiff/tiff_io.dart';
+import 'package:tiff/tiff_minimap.dart';
 
 part 'tiff_viewer/memory_monitor.dart';
 part 'tiff_viewer/preview_decoder.dart';
@@ -19,9 +20,9 @@ part 'tiff_viewer/tile_engine.dart';
 part 'tiff_viewer/region_engine.dart';
 part 'tiff_viewer/display_cache.dart';
 part 'tiff_viewer/display_optimizer.dart';
+part 'tiff_viewer/pyramid_cache.dart';
 part 'tiff_viewer/pixel_scale.dart';
 part 'tiff_viewer/zoomable_image.dart';
-part 'tiff_viewer/minimap.dart';
 part 'tiff_viewer/scale_bar.dart';
 part 'tiff_viewer/metadata_table.dart';
 part 'tiff_viewer/small_widgets.dart';
@@ -87,9 +88,24 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
   _TileEngine? _tileEngine;
   _RegionEngine? _regionEngine;
 
+  /// The sidecar _PyramidCache file's own [TiffDocument], if [_openPreview]
+  /// opened one to fold extra rungs into [_tileEngine]'s levels — kept
+  /// alive for as long as the engine is (each of its worker isolates opens
+  /// the same file independently, but this main-isolate copy is what
+  /// [_buildPyramidLevels] used to size [_tileEngine]'s own `levels`) and
+  /// closed in [dispose].
+  TiffDocument? _pyramidCacheDocument;
+
   int _memoryRssBytes = 0;
   Timer? _memoryTicker;
   late final TextEditingController _memoryBudgetController;
+
+  // Tile-hoá knobs for TiffDisplayOptimizer.optimize (tileSize, minPyramidDimension)
+  // — see their doc comments in the `tiff` package for what each controls.
+  // Read fresh from these controllers in `_runOptimize`, not mirrored into
+  // separate state fields, since nothing else in this page depends on them.
+  late final TextEditingController _tileSizeController;
+  late final TextEditingController _minPyramidDimensionController;
 
   bool get _previewStarted => _previewLoading || _tileEngine != null || _regionEngine != null;
 
@@ -106,18 +122,35 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
       setState(() => _memoryRssBytes = _MemoryMonitor.currentRssBytes());
     });
     _memoryBudgetController = TextEditingController(text: '${_MemoryMonitor.totalBudgetBytes ~/ (1024 * 1024)}');
+    _tileSizeController = TextEditingController(text: '512');
+    _minPyramidDimensionController = TextEditingController(text: '512');
   }
 
   @override
   void dispose() {
     // Releases the open file handle a file-backed TiffDocument holds.
     _document?.close();
+    _pyramidCacheDocument?.close();
     _tileEngine?.dispose();
     _regionEngine?.dispose();
     _optimizeTicker?.cancel();
     _memoryTicker?.cancel();
     _memoryBudgetController.dispose();
+    _tileSizeController.dispose();
+    _minPyramidDimensionController.dispose();
     super.dispose();
+  }
+
+  /// Parses a positive-integer field (tile size / min pyramid dimension),
+  /// falling back to [fallback] on anything blank, non-numeric, or <= 0 —
+  /// same "ignore an in-progress edit rather than error" behavior as
+  /// [_onMemoryBudgetChanged], just without the value being clamped/mirrored
+  /// back into the field, since [TiffDisplayOptimizer.optimize] itself
+  /// already rejects <= 0 with a clear ArgumentError if this ever let one
+  /// through.
+  int _positiveIntOrDefault(String text, int fallback) {
+    final value = int.tryParse(text.trim());
+    return (value == null || value <= 0) ? fallback : value;
   }
 
   /// Applies a new memory budget (typed in MB) to [_MemoryMonitor], the
@@ -181,11 +214,35 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
     setState(() => _previewLoading = true);
 
     if (document.images.first.metadata.isTiled) {
-      final engine = _TileEngine(filePath: widget.filePath, levels: _buildPyramidLevels(document));
+      var levels = _buildPyramidLevels(document);
+      String? pyramidCachePath;
+      // No native pyramid of its own — see if a sidecar _PyramidCache (built
+      // via the "Cache pyramid levels" action below) has extra rungs to
+      // fold in, so zooming out doesn't force downsampling the full page
+      // live just because the source itself only has one resolution.
+      if (levels.length <= 1) {
+        final cache = await _PyramidCache.open(widget.filePath);
+        if (cache != null) {
+          TiffDocument? extraLevelsDocument;
+          try {
+            extraLevelsDocument = decodeTiffFile(File(cache.levelsFilePath));
+            levels = _buildPyramidLevels(document, extraLevelsDocument: extraLevelsDocument);
+            pyramidCachePath = cache.levelsFilePath;
+            _pyramidCacheDocument = extraLevelsDocument;
+          } catch (_) {
+            // Corrupt/stale cache file, or a failure after opening it — fall
+            // back to just the native level, and release the handle rather
+            // than leaking it since _pyramidCacheDocument never got set.
+            extraLevelsDocument?.close();
+          }
+        }
+      }
+      final engine = _TileEngine(filePath: widget.filePath, levels: levels, pyramidCachePath: pyramidCachePath);
       engine.addListener(_onEngineChanged);
       await engine.start();
       if (!mounted) {
         engine.dispose();
+        _pyramidCacheDocument?.close();
         return;
       }
       setState(() {
@@ -270,9 +327,35 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
           filePath: widget.filePath,
           outputPath: outputPath,
           mode: mode,
+          tileSize: _positiveIntOrDefault(_tileSizeController.text, 512),
+          minPyramidDimension: _positiveIntOrDefault(_minPyramidDimensionController.text, 512),
           onProgress: onProgress,
         );
         if (error == null) successMessage = 'Đã lưu file tối ưu tại:\n$outputPath';
+        break;
+      case 'pyramid_cache':
+        error = await _runPyramidCacheBuild(
+          widget.filePath,
+          tileSize: _positiveIntOrDefault(_tileSizeController.text, 512),
+          minPyramidDimension: _positiveIntOrDefault(_minPyramidDimensionController.text, 512),
+          onProgress: onProgress,
+        );
+        if (error == null) {
+          successMessage =
+              'Đã cache thêm các mức pyramid — không đổi/nhân bản file gốc, '
+              'mở lại file này sẽ zoom mượt hơn.';
+          final cache = await _PyramidCache.open(widget.filePath);
+          if (cache != null) {
+            final cacheBytes = await File(cache.levelsFilePath).length();
+            final sourceBytes = _fileSizeBytes;
+            final ratio = sourceBytes != null && sourceBytes > 0 ? cacheBytes / sourceBytes : null;
+            successMessage +=
+                '\nSố mức thêm: ${cache.levelCount}'
+                '\nDung lượng cache: ${_formatMemoryBytes(cacheBytes)}'
+                '${ratio != null ? ' (${(ratio * 100).toStringAsFixed(1)}% file gốc)' : ''}'
+                '\nVị trí: ${cache.dir.path}';
+          }
+        }
         break;
       case 'cache_raw':
       case 'cache_deflate':
@@ -350,6 +433,12 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
     if (metadata == null) return false;
     return metadata.width * metadata.height <= _maxSafeFullDecodePixels;
   }
+
+  /// Whether page 0 is itself tiled — [_PyramidCache] only helps a tiled
+  /// source (see [_openPreview]'s [_TileEngine] branch, the only one it
+  /// plugs into); a strip-organized source gets no benefit from it, since
+  /// [_RegionEngine] doesn't consume pyramid rungs the same way.
+  bool get _isTiledSource => _document?.images.first.metadata.isTiled ?? false;
 
   Future<void> _runWriteTest() async {
     final document = _document;
@@ -483,6 +572,53 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                     ],
                   ),
                   const SizedBox(height: 12),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SizedBox(
+                        width: 160,
+                        child: TextField(
+                          key: const Key('tileSizeField'),
+                          controller: _tileSizeController,
+                          enabled: !_optimizing,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(
+                            labelText: 'Kích thước tile (px)',
+                            isDense: true,
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      SizedBox(
+                        width: 160,
+                        child: TextField(
+                          key: const Key('minPyramidDimensionField'),
+                          controller: _minPyramidDimensionController,
+                          enabled: !_optimizing,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(
+                            labelText: 'Cạnh nhỏ nhất pyramid (px)',
+                            isDense: true,
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(
+                            'Áp dụng cho "Tile hoá + pyramid"/"Chỉ tile hoá"/"Cache pyramid levels" — '
+                            'giá trị càng nhỏ ở "Cạnh nhỏ nhất pyramid" thì càng nhiều level '
+                            '(mỗi level giảm còn 1/2 kích thước level trước).',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
@@ -505,6 +641,16 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                               ? null
                               : () => _runOptimize('tiledOnly', 'Chỉ tile hoá'),
                           child: const Text('Chỉ tile hoá'),
+                        ),
+                      ),
+                      Tooltip(
+                        message: !_isTiledSource
+                            ? 'Đã tắt: chỉ hỗ trợ file đã ở dạng tile'
+                            : 'Cache riêng các mức pyramid nhỏ hơn — không đổi/nhân bản file gốc, nhẹ hơn nhiều '
+                                  'so với "Tile hoá + pyramid", và không giới hạn kích thước ảnh (decode theo dải)',
+                        child: OutlinedButton(
+                          onPressed: (_optimizing || !_isTiledSource) ? null : () => _runOptimize('pyramid_cache', 'Cache pyramid levels'),
+                          child: const Text('Cache pyramid levels'),
                         ),
                       ),
                       Tooltip(

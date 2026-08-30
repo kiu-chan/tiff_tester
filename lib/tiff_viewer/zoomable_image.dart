@@ -162,9 +162,12 @@ class _RegionZoomableImageState extends State<_RegionZoomableImage> {
               Positioned(
                 right: 8,
                 bottom: 8,
-                child: AnimatedBuilder(
-                  animation: Listenable.merge([_controller, widget.engine]),
-                  builder: (context, _) => _RegionMinimap(engine: widget.engine, controller: _controller, viewportSize: viewportSize),
+                child: TiffMinimap(
+                  overview: widget.engine.overview,
+                  baseWidth: widget.engine.baseWidth,
+                  baseHeight: widget.engine.baseHeight,
+                  controller: _controller,
+                  viewportSize: viewportSize,
                 ),
               ),
             ],
@@ -349,9 +352,12 @@ class _TiledZoomableImageState extends State<_TiledZoomableImage> {
               Positioned(
                 right: 8,
                 bottom: 8,
-                child: AnimatedBuilder(
-                  animation: Listenable.merge([_controller, widget.engine]),
-                  builder: (context, _) => _TiledMinimap(engine: widget.engine, controller: _controller, viewportSize: viewportSize),
+                child: TiffMinimap(
+                  overview: widget.engine.overview,
+                  baseWidth: widget.engine.baseWidth,
+                  baseHeight: widget.engine.baseHeight,
+                  controller: _controller,
+                  viewportSize: viewportSize,
                 ),
               ),
             ],

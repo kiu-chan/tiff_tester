@@ -111,6 +111,15 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
   late final TextEditingController _tileSizeController;
   late final TextEditingController _minPyramidDimensionController;
 
+  // How many pyramid rungs to build for "Tile hoá + pyramid"/"Cache pyramid
+  // levels" — see TiffDisplayOptimizer.optimize's levelCount doc comment.
+  // Left blank by default: null (see _positiveIntOrNull) means "let
+  // minPyramidDimension decide instead", the library's own auto-computed
+  // choice (halve down to a size small enough to display smoothly, no
+  // further downsampling needed at read time) — only overridden when the
+  // user actually types a value here.
+  late final TextEditingController _levelCountController;
+
   // How many isolates to spread a parallel decode across (see
   // TiffAutoDecodeBudget.recommend) — for "Cache pyramid levels" (a large
   // source's banded first rung) and every "Cache (...)" app-cache variant.
@@ -137,6 +146,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
     _memoryBudgetController = TextEditingController(text: '${_MemoryMonitor.totalBudgetBytes ~/ (1024 * 1024)}');
     _tileSizeController = TextEditingController(text: '512');
     _minPyramidDimensionController = TextEditingController(text: '512');
+    _levelCountController = TextEditingController();
     _workerCountController = TextEditingController();
   }
 
@@ -152,6 +162,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
     _memoryBudgetController.dispose();
     _tileSizeController.dispose();
     _minPyramidDimensionController.dispose();
+    _levelCountController.dispose();
     _workerCountController.dispose();
     super.dispose();
   }
@@ -366,6 +377,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
           mode: mode,
           tileSize: _positiveIntOrDefault(_tileSizeController.text, 512),
           minPyramidDimension: _positiveIntOrDefault(_minPyramidDimensionController.text, 512),
+          levelCount: _positiveIntOrNull(_levelCountController.text),
           onProgress: onOptimizeProgress,
         );
         if (error == null) successMessage = 'Đã lưu file tối ưu tại:\n$outputPath';
@@ -375,6 +387,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
           widget.filePath,
           tileSize: _positiveIntOrDefault(_tileSizeController.text, 512),
           minPyramidDimension: _positiveIntOrDefault(_minPyramidDimensionController.text, 512),
+          levelCount: _positiveIntOrNull(_levelCountController.text),
           workerCount: _positiveIntOrNull(_workerCountController.text),
           onProgress: onOptimizeProgress,
         );
@@ -477,13 +490,15 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
     return '$line ($percent%) — đã chạy ${elapsedSeconds}s';
   }
 
-  /// Inserts [suffix] before [path]'s extension (`foo.tiff` -> `foo.tiled.tiff`),
-  /// or appends it if there's no extension to insert before.
+  /// Inserts `_[suffix]` before [path]'s extension (`foo.tiff` ->
+  /// `foo_tiled.tiff`), or appends it if there's no extension to insert
+  /// before. Uses an underscore rather than another dot so the result keeps
+  /// exactly one extension (`foo_tiled.tiff`, not `foo.tiled.tiff`).
   String _suffixedPath(String path, String suffix) {
     final lastSeparator = path.lastIndexOf(Platform.pathSeparator);
     final dotIndex = path.lastIndexOf('.');
-    if (dotIndex <= lastSeparator) return '$path.$suffix';
-    return '${path.substring(0, dotIndex)}.$suffix${path.substring(dotIndex)}';
+    if (dotIndex <= lastSeparator) return '${path}_$suffix';
+    return '${path.substring(0, dotIndex)}_$suffix${path.substring(dotIndex)}';
   }
 
   bool get _fullDecodeIsSafe {
@@ -663,13 +678,33 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                         ),
                       ),
                       const SizedBox(width: 12),
+                      SizedBox(
+                        width: 160,
+                        child: TextField(
+                          key: const Key('levelCountField'),
+                          controller: _levelCountController,
+                          enabled: !_optimizing,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(
+                            labelText: 'Số level pyramid',
+                            hintText: 'Tự động',
+                            isDense: true,
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
                       Expanded(
                         child: Padding(
                           padding: const EdgeInsets.only(top: 4),
                           child: Text(
-                            'Áp dụng cho "Tile hoá + pyramid"/"Chỉ tile hoá"/"Cache pyramid levels" — '
-                            'giá trị càng nhỏ ở "Cạnh nhỏ nhất pyramid" thì càng nhiều level '
-                            '(mỗi level giảm còn 1/2 kích thước level trước).',
+                            'Áp dụng cho "Tile hoá + pyramid"/"Cache pyramid levels" '
+                            '("Chỉ tile hoá" bỏ qua cả hai). Để trống "Số level pyramid": '
+                            'tự tính theo "Cạnh nhỏ nhất pyramid" (giá trị càng nhỏ thì càng '
+                            'nhiều level, mỗi level giảm còn 1/2 kích thước level trước) — đã đủ '
+                            'nhỏ để hiển thị mượt mà mà không cần thu nhỏ thêm lúc xem. '
+                            'Nhập "Số level pyramid" để chỉ định đúng số level, bỏ qua '
+                            '"Cạnh nhỏ nhất pyramid".',
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
                         ),

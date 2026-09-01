@@ -144,12 +144,19 @@ class _PyramidCache {
   /// CPU-count-aware sizing `_DisplayCache.build` already uses) — so this
   /// never needs the whole page decoded in memory (or on a single core) at
   /// once regardless of how large it is.
+  ///
+  /// [levelCount] is forwarded to `TiffDisplayOptimizer.optimize`/
+  /// `optimizeLargeSourcePyramidLevelsParallel` as-is: how many smaller
+  /// rungs to build, left `null` (the default) to let [minPyramidDimension]
+  /// decide instead — already auto-computed for smooth display, so most
+  /// callers don't need to set this at all.
   static Future<void> build(
     TiffImage page,
     String filePath,
     String dirPath, {
     int tileSize = 512,
     int minPyramidDimension = 512,
+    int? levelCount,
     int maxDirectDecodePixels = _maxSafeFullDecodePixels,
     int? workerCount,
     void Function(TiffOptimizeProgress)? onProgress,
@@ -171,6 +178,7 @@ class _PyramidCache {
         mode: TiffOptimizationMode.pyramidLevelsOnly,
         tileSize: tileSize,
         minPyramidDimension: minPyramidDimension,
+        levelCount: levelCount,
         onProgress: forwardProgress,
       );
     } else {
@@ -185,13 +193,14 @@ class _PyramidCache {
         filePath,
         tileSize: tileSize,
         minPyramidDimension: minPyramidDimension,
+        levelCount: levelCount,
         maxDirectDecodePixels: maxDirectDecodePixels,
         workerCount: workerCount,
         setUpIsolate: TiffImageAdapter.enableJpegSupport,
         onProgress: forwardProgress,
       );
     }
-    final levelCount = lastProgress?.levelCount ?? 1;
+    final actualLevelCount = lastProgress?.levelCount ?? 1;
 
     await File('${dir.path}/$_levelsFileName').writeAsBytes(bytes);
 
@@ -203,7 +212,7 @@ class _PyramidCache {
         'sourceModifiedMillis': sourceStat.modified.millisecondsSinceEpoch,
         'tileSize': tileSize,
         'minPyramidDimension': minPyramidDimension,
-        'levelCount': levelCount,
+        'levelCount': actualLevelCount,
       }),
     );
 
@@ -220,8 +229,8 @@ class _PyramidCache {
 /// [_PyramidCache.build] instead, whose own `onProgress` already handles
 /// holding back its final tick until the file write is done. Sends a final
 /// `true` on success or a `String` on failure.
-Future<void> _pyramidCacheIsolateEntry((SendPort, String, String, int, int, int?) args) async {
-  final (sendPort, filePath, dirPath, tileSize, minPyramidDimension, workerCount) = args;
+Future<void> _pyramidCacheIsolateEntry((SendPort, String, String, int, int, int?, int?) args) async {
+  final (sendPort, filePath, dirPath, tileSize, minPyramidDimension, levelCount, workerCount) = args;
   try {
     TiffImageAdapter.enableJpegSupport();
     final document = decodeTiffFile(File(filePath));
@@ -232,6 +241,7 @@ Future<void> _pyramidCacheIsolateEntry((SendPort, String, String, int, int, int?
         dirPath,
         tileSize: tileSize,
         minPyramidDimension: minPyramidDimension,
+        levelCount: levelCount,
         workerCount: workerCount,
         onProgress: sendPort.send,
       );
@@ -251,6 +261,7 @@ Future<String?> _runPyramidCacheBuild(
   String filePath, {
   int tileSize = 512,
   int minPyramidDimension = 512,
+  int? levelCount,
   int? workerCount,
   void Function(TiffOptimizeProgress)? onProgress,
 }) async {
@@ -265,7 +276,7 @@ Future<String?> _runPyramidCacheBuild(
   try {
     await Isolate.spawn(
       _pyramidCacheIsolateEntry,
-      (receivePort.sendPort, filePath, dirPath, tileSize, minPyramidDimension, workerCount),
+      (receivePort.sendPort, filePath, dirPath, tileSize, minPyramidDimension, levelCount, workerCount),
     );
   } catch (e) {
     receivePort.close();

@@ -22,8 +22,8 @@ typedef _StepProgress = (int completed, int total, double fraction);
 /// the write below actually happens — same reasoning as
 /// [_cacheBuildIsolateEntry]. Sends a final `true` on success or a `String`
 /// on failure.
-void _optimizeIsolateEntry((SendPort, String, String, int, int, int) args) {
-  final (sendPort, filePath, outputPath, modeIndex, tileSize, minPyramidDimension) = args;
+void _optimizeIsolateEntry((SendPort, String, String, int, int, int, int?) args) {
+  final (sendPort, filePath, outputPath, modeIndex, tileSize, minPyramidDimension, levelCount) = args;
   try {
     TiffImageAdapter.enableJpegSupport();
     final document = decodeTiffFile(File(filePath));
@@ -34,6 +34,7 @@ void _optimizeIsolateEntry((SendPort, String, String, int, int, int) args) {
         mode: TiffOptimizationMode.values[modeIndex],
         tileSize: tileSize,
         minPyramidDimension: minPyramidDimension,
+        levelCount: levelCount,
         onProgress: (p) {
           lastProgress = p;
           if (p.fraction < 1.0) sendPort.send(p);
@@ -60,13 +61,14 @@ Future<String?> _runDisplayOptimization({
   required TiffOptimizationMode mode,
   int tileSize = 512,
   int minPyramidDimension = 512,
+  int? levelCount,
   void Function(TiffOptimizeProgress)? onProgress,
 }) async {
   final receivePort = ReceivePort();
   try {
     await Isolate.spawn(
       _optimizeIsolateEntry,
-      (receivePort.sendPort, filePath, outputPath, mode.index, tileSize, minPyramidDimension),
+      (receivePort.sendPort, filePath, outputPath, mode.index, tileSize, minPyramidDimension, levelCount),
     );
   } catch (e) {
     receivePort.close();

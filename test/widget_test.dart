@@ -247,11 +247,34 @@ void main() {
     expect(find.textContaining('failed'), findsNothing);
     expect(find.textContaining('Đã lưu file tối ưu tại'), findsOneWidget);
 
-    final outputPath = '${tempDir.path}/sample.pyramid.tiff';
+    final outputPath = '${tempDir.path}/sample_pyramid.tiff';
     expect(File(outputPath).existsSync(), isTrue);
     final optimized = TiffDecoder.decode(File(outputPath).readAsBytesSync());
     expect(optimized.images.first.metadata.isTiled, isTrue);
   });
+
+  testWidgets(
+    'optimize: an explicit "Số level pyramid" overrides the default minPyramidDimension-derived count',
+    (tester) async {
+      final path = _writeSampleTiff(tempDir, width: 16, height: 16);
+      await _openViewer(tester, path);
+
+      // minPyramidDimension is left at its default (512), which alone would
+      // yield a single rung for a 16x16 source — levelCountField should
+      // still force 2 rungs regardless.
+      await tester.enterText(find.byKey(const Key('levelCountField')), '2');
+      await tester.pumpAndSettle();
+      await _runOptimize(tester, 'Tile hoá + pyramid');
+
+      expect(find.textContaining('failed'), findsNothing);
+      expect(find.textContaining('Đã lưu file tối ưu tại'), findsOneWidget);
+
+      final outputPath = '${tempDir.path}/sample_pyramid.tiff';
+      final optimized = TiffDecoder.decode(File(outputPath).readAsBytesSync());
+      final dims = optimized.images.map((i) => (i.metadata.width, i.metadata.height)).toList();
+      expect(dims, [(16, 16), (8, 8)]);
+    },
+  );
 
   testWidgets('optimize: tile-only writes a new, tiled TIFF next to the source', (tester) async {
     final path = _writeSampleTiff(tempDir, width: 16, height: 16);
@@ -260,7 +283,7 @@ void main() {
     await _runOptimize(tester, 'Chỉ tile hoá');
 
     expect(find.textContaining('failed'), findsNothing);
-    final outputPath = '${tempDir.path}/sample.tiled.tiff';
+    final outputPath = '${tempDir.path}/sample_tiled.tiff';
     expect(File(outputPath).existsSync(), isTrue);
     final optimized = TiffDecoder.decode(File(outputPath).readAsBytesSync());
     expect(optimized.images, hasLength(1));
@@ -276,8 +299,8 @@ void main() {
     expect(find.textContaining('failed'), findsNothing);
     expect(find.textContaining('Đã tạo cache hiển thị'), findsOneWidget);
     // Unlike the other two strategies, no sibling .tiff file is created.
-    expect(File('${tempDir.path}/sample.tiled.tiff').existsSync(), isFalse);
-    expect(File('${tempDir.path}/sample.pyramid.tiff').existsSync(), isFalse);
+    expect(File('${tempDir.path}/sample_tiled.tiff').existsSync(), isFalse);
+    expect(File('${tempDir.path}/sample_pyramid.tiff').existsSync(), isFalse);
 
     // Viewing now should transparently pick up the cache and still work.
     await _viewImage(tester);
@@ -361,8 +384,8 @@ void main() {
     expect(find.textContaining('Đã cache thêm các mức pyramid'), findsOneWidget);
     // Unlike "Tile hoá + pyramid"/"Chỉ tile hoá", no sibling .tiff file next
     // to the source is created — only the sidecar .pyramidcache directory.
-    expect(File('${tempDir.path}/tiled_sample.tiled.tiff').existsSync(), isFalse);
-    expect(File('${tempDir.path}/tiled_sample.pyramid.tiff').existsSync(), isFalse);
+    expect(File('${tempDir.path}/tiled_sample_tiled.tiff').existsSync(), isFalse);
+    expect(File('${tempDir.path}/tiled_sample_pyramid.tiff').existsSync(), isFalse);
     expect(File(path).lengthSync(), bytes.length); // source itself untouched
 
     final cacheDir = Directory('$path.pyramidcache');

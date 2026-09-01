@@ -111,6 +111,15 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
   late final TextEditingController _tileSizeController;
   late final TextEditingController _minPyramidDimensionController;
 
+  // How many isolates to spread a parallel decode across (see
+  // TiffAutoDecodeBudget.recommend) — for "Cache pyramid levels" (a large
+  // source's banded first rung) and every "Cache (...)" app-cache variant.
+  // Left blank by default: null (see _positiveIntOrNull) means "let
+  // TiffAutoDecodeBudget.recommend pick it from actual idle memory and CPU
+  // count", the same as before this field existed; only overridden when the
+  // user actually types a value here.
+  late final TextEditingController _workerCountController;
+
   bool get _previewStarted => _previewLoading || _tileEngine != null || _regionEngine != null;
 
   @override
@@ -128,6 +137,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
     _memoryBudgetController = TextEditingController(text: '${_MemoryMonitor.totalBudgetBytes ~/ (1024 * 1024)}');
     _tileSizeController = TextEditingController(text: '512');
     _minPyramidDimensionController = TextEditingController(text: '512');
+    _workerCountController = TextEditingController();
   }
 
   @override
@@ -142,6 +152,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
     _memoryBudgetController.dispose();
     _tileSizeController.dispose();
     _minPyramidDimensionController.dispose();
+    _workerCountController.dispose();
     super.dispose();
   }
 
@@ -155,6 +166,17 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
   int _positiveIntOrDefault(String text, int fallback) {
     final value = int.tryParse(text.trim());
     return (value == null || value <= 0) ? fallback : value;
+  }
+
+  /// Parses the worker-count field: `null` on anything blank, non-numeric,
+  /// or <= 0 — meaning "no override", so the caller falls back to
+  /// `TiffAutoDecodeBudget.recommend`'s own pick. Unlike
+  /// [_positiveIntOrDefault], there's no fallback value to substitute here;
+  /// blank is itself a meaningful choice ("let the library decide"), not an
+  /// in-progress edit to be papered over.
+  int? _positiveIntOrNull(String text) {
+    final value = int.tryParse(text.trim());
+    return (value == null || value <= 0) ? null : value;
   }
 
   /// Applies a new memory budget (typed in MB) to [_MemoryMonitor], the
@@ -353,6 +375,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
           widget.filePath,
           tileSize: _positiveIntOrDefault(_tileSizeController.text, 512),
           minPyramidDimension: _positiveIntOrDefault(_minPyramidDimensionController.text, 512),
+          workerCount: _positiveIntOrNull(_workerCountController.text),
           onProgress: onOptimizeProgress,
         );
         if (error == null) {
@@ -380,7 +403,12 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
           'cache_jpeg' => _DisplayCacheFormat.jpeg,
           _ => _DisplayCacheFormat.rawRgba,
         };
-        error = await _runDisplayCacheBuild(widget.filePath, format: format, onProgress: onCacheProgress);
+        error = await _runDisplayCacheBuild(
+          widget.filePath,
+          format: format,
+          workerCount: _positiveIntOrNull(_workerCountController.text),
+          onProgress: onCacheProgress,
+        );
         if (error == null) {
           successMessage = 'Đã tạo cache hiển thị riêng cho ứng dụng — mở lại file này sẽ mượt hơn.';
           // Best-effort: reads the manifest just written back to report its
@@ -642,6 +670,38 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                             'Áp dụng cho "Tile hoá + pyramid"/"Chỉ tile hoá"/"Cache pyramid levels" — '
                             'giá trị càng nhỏ ở "Cạnh nhỏ nhất pyramid" thì càng nhiều level '
                             '(mỗi level giảm còn 1/2 kích thước level trước).',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SizedBox(
+                        width: 160,
+                        child: TextField(
+                          key: const Key('workerCountField'),
+                          controller: _workerCountController,
+                          enabled: !_optimizing,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(
+                            labelText: 'Số luồng xử lý',
+                            hintText: 'Tự động',
+                            isDense: true,
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(
+                            'Áp dụng cho "Cache pyramid levels" và mọi "Cache (...)" — số isolate giải mã song song. '
+                            'Để trống: tự chọn theo số lõi CPU và bộ nhớ khả dụng hiện tại.',
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
                         ),

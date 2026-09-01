@@ -98,8 +98,8 @@ Future<String?> _runDisplayOptimization({
 /// [_decodePreviewRgba]'s callers elsewhere in this app: a single
 /// request/response call can't report progress mid-flight. Sends a final
 /// `true` on success or a `String` on failure.
-Future<void> _cacheBuildIsolateEntry((SendPort, String, String, int, int) args) async {
-  final (sendPort, filePath, dirPath, formatIndex, jpegQuality) = args;
+Future<void> _cacheBuildIsolateEntry((SendPort, String, String, int, int, int?) args) async {
+  final (sendPort, filePath, dirPath, formatIndex, jpegQuality, workerCount) = args;
   try {
     TiffImageAdapter.enableJpegSupport();
     final document = decodeTiffFile(File(filePath));
@@ -110,6 +110,7 @@ Future<void> _cacheBuildIsolateEntry((SendPort, String, String, int, int) args) 
         dirPath,
         format: _DisplayCacheFormat.values[formatIndex],
         jpegQuality: jpegQuality,
+        workerCount: workerCount,
         onProgress: (p) => sendPort.send((p.completedBands, p.totalBands, p.fraction)),
       );
       sendPort.send(true);
@@ -128,6 +129,7 @@ Future<String?> _runDisplayCacheBuild(
   String filePath, {
   _DisplayCacheFormat format = _DisplayCacheFormat.rawRgba,
   int jpegQuality = 85,
+  int? workerCount,
   void Function(_StepProgress)? onProgress,
 }) async {
   final String dirPath;
@@ -139,7 +141,7 @@ Future<String?> _runDisplayCacheBuild(
 
   final receivePort = ReceivePort();
   try {
-    await Isolate.spawn(_cacheBuildIsolateEntry, (receivePort.sendPort, filePath, dirPath, format.index, jpegQuality));
+    await Isolate.spawn(_cacheBuildIsolateEntry, (receivePort.sendPort, filePath, dirPath, format.index, jpegQuality, workerCount));
   } catch (e) {
     receivePort.close();
     return '$e';

@@ -223,6 +223,7 @@ class _DisplayCache {
     String dirPath, {
     _DisplayCacheFormat format = _DisplayCacheFormat.rawRgba,
     int jpegQuality = 85,
+    int? workerCount,
     void Function(_CacheBuildProgress)? onProgress,
   }) async {
     final dir = Directory(dirPath);
@@ -253,9 +254,10 @@ class _DisplayCache {
     // small (leaves a big multi-core machine mostly idle) or too large
     // (risks the exact kind of system-wide low-memory situation
     // TiffAutoDecodeBudget's reserve/double-buffer margins exist to avoid).
-    // Left at the library default rather than pushed higher here: a
-    // "one-off build has the machine to itself" assumption doesn't hold on
-    // a real dev machine already running a browser/IDE/etc. alongside it.
+    // Left at the library default rather than pushed higher here unless
+    // [workerCount] overrides it: a "one-off build has the machine to
+    // itself" assumption doesn't hold on a real dev machine already running
+    // a browser/IDE/etc. alongside it.
     final budget = TiffAutoDecodeBudget.recommend(metadata);
 
     var completedBands = 0;
@@ -264,7 +266,7 @@ class _DisplayCache {
       pageIndex: 0,
       bandHeight: bandHeight,
       maxBytesPerChunk: budget.maxBytesPerChunk,
-      workerCount: budget.workerCount,
+      workerCount: workerCount ?? budget.workerCount,
       setUpIsolate: TiffImageAdapter.enableJpegSupport,
       onBand: (band) {
         final encoded = _encodeStoredBand(

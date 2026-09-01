@@ -139,11 +139,11 @@ class _PyramidCache {
   /// (one whole-page RGBA8 decode, same as any other small page); above it,
   /// `TiffDisplayOptimizer.optimizeLargeSourcePyramidLevelsParallel` derives
   /// the first rung via a bounded-memory banded downsample straight from
-  /// the source instead — spread across `TiffAutoDecodeBudget.recommend`'s
-  /// worker count, the same idle-memory/CPU-count-aware sizing
-  /// `_DisplayCache.build` already uses — so this never needs the whole
-  /// page decoded in memory (or on a single core) at once regardless of how
-  /// large it is.
+  /// the source instead — spread across [workerCount] isolates (default:
+  /// `TiffAutoDecodeBudget.recommend`'s own pick, the same idle-memory/
+  /// CPU-count-aware sizing `_DisplayCache.build` already uses) — so this
+  /// never needs the whole page decoded in memory (or on a single core) at
+  /// once regardless of how large it is.
   static Future<void> build(
     TiffImage page,
     String filePath,
@@ -151,6 +151,7 @@ class _PyramidCache {
     int tileSize = 512,
     int minPyramidDimension = 512,
     int maxDirectDecodePixels = _maxSafeFullDecodePixels,
+    int? workerCount,
     void Function(TiffOptimizeProgress)? onProgress,
   }) async {
     final dir = Directory(dirPath);
@@ -174,18 +175,18 @@ class _PyramidCache {
       );
     } else {
       // Spreads the first rung's (otherwise dominant) banded decode across
-      // several isolates instead of one at a time — same
-      // idle-memory/CPU-count-aware sizing _DisplayCache.build already uses
-      // for its own parallel decode, rather than a number guessed here.
-      final budget = TiffAutoDecodeBudget.recommend(metadata);
+      // several isolates instead of one at a time. [workerCount] left null
+      // (the app's own default: an empty field means "no override") lets
+      // optimizeLargeSourcePyramidLevelsParallel pick both worker count and
+      // per-band byte budget itself, via TiffAutoDecodeBudget.recommend —
+      // no need to compute or pass that pairing by hand here.
       bytes = await TiffDisplayOptimizer.optimizeLargeSourcePyramidLevelsParallel(
         page,
         filePath,
         tileSize: tileSize,
         minPyramidDimension: minPyramidDimension,
         maxDirectDecodePixels: maxDirectDecodePixels,
-        maxBandBytes: budget.maxBytesPerChunk,
-        workerCount: budget.workerCount,
+        workerCount: workerCount,
         setUpIsolate: TiffImageAdapter.enableJpegSupport,
         onProgress: forwardProgress,
       );
@@ -219,8 +220,8 @@ class _PyramidCache {
 /// [_PyramidCache.build] instead, whose own `onProgress` already handles
 /// holding back its final tick until the file write is done. Sends a final
 /// `true` on success or a `String` on failure.
-Future<void> _pyramidCacheIsolateEntry((SendPort, String, String, int, int) args) async {
-  final (sendPort, filePath, dirPath, tileSize, minPyramidDimension) = args;
+Future<void> _pyramidCacheIsolateEntry((SendPort, String, String, int, int, int?) args) async {
+  final (sendPort, filePath, dirPath, tileSize, minPyramidDimension, workerCount) = args;
   try {
     TiffImageAdapter.enableJpegSupport();
     final document = decodeTiffFile(File(filePath));
@@ -231,6 +232,7 @@ Future<void> _pyramidCacheIsolateEntry((SendPort, String, String, int, int) args
         dirPath,
         tileSize: tileSize,
         minPyramidDimension: minPyramidDimension,
+        workerCount: workerCount,
         onProgress: sendPort.send,
       );
       sendPort.send(true);
@@ -249,6 +251,7 @@ Future<String?> _runPyramidCacheBuild(
   String filePath, {
   int tileSize = 512,
   int minPyramidDimension = 512,
+  int? workerCount,
   void Function(TiffOptimizeProgress)? onProgress,
 }) async {
   final String dirPath;
@@ -262,7 +265,7 @@ Future<String?> _runPyramidCacheBuild(
   try {
     await Isolate.spawn(
       _pyramidCacheIsolateEntry,
-      (receivePort.sendPort, filePath, dirPath, tileSize, minPyramidDimension),
+      (receivePort.sendPort, filePath, dirPath, tileSize, minPyramidDimension, workerCount),
     );
   } catch (e) {
     receivePort.close();

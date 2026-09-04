@@ -13,7 +13,7 @@ class _WorkingIndicator extends StatelessWidget {
         children: [
           SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70)),
           SizedBox(width: 8),
-          Text('Đang tải nét...', style: TextStyle(color: Colors.white, fontSize: 11)),
+          Text('Loading detail...', style: TextStyle(color: Colors.white, fontSize: 11)),
         ],
       ),
     );

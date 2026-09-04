@@ -44,12 +44,12 @@ class HomePage extends StatelessWidget {
           children: [
             const Icon(Icons.image_search, size: 64, color: Colors.grey),
             const SizedBox(height: 16),
-            const Text('Chọn một file .tif / .tiff để xem thử'),
+            const Text('Choose a .tif / .tiff file to preview'),
             const SizedBox(height: 24),
             FilledButton.icon(
               onPressed: () => _pickFile(context),
               icon: const Icon(Icons.folder_open),
-              label: const Text('Chọn file TIFF...'),
+              label: const Text('Choose TIFF file...'),
             ),
           ],
         ),

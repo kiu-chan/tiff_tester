@@ -79,8 +79,8 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
   double? _optimizeProgress;
   // A ready-to-show status line built directly in the progress callback
   // (see _describeOptimizeProgress/_runOptimize's onCacheProgress) — e.g.
-  // "Đang nén tile 340/512 (mức 2/6)" — rather than raw step counts kept
-  // here and formatted later, since the two progress sources this page
+  // "Compressing tile 340/512 (level 2/6)" — rather than raw step counts
+  // kept here and formatted later, since the two progress sources this page
   // drives (TiffDisplayOptimizer's per-stage TiffOptimizeProgress, and
   // _DisplayCache's simpler band-only progress) don't share one shape.
   String? _optimizeStatusLine;
@@ -104,14 +104,14 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
   Timer? _memoryTicker;
   late final TextEditingController _memoryBudgetController;
 
-  // Tile-hoá knobs for TiffDisplayOptimizer.optimize (tileSize, minPyramidDimension)
+  // Tiling knobs for TiffDisplayOptimizer.optimize (tileSize, minPyramidDimension)
   // — see their doc comments in the `tiff` package for what each controls.
   // Read fresh from these controllers in `_runOptimize`, not mirrored into
   // separate state fields, since nothing else in this page depends on them.
   late final TextEditingController _tileSizeController;
   late final TextEditingController _minPyramidDimensionController;
 
-  // How many pyramid rungs to build for "Tile hoá + pyramid"/"Cache pyramid
+  // How many pyramid rungs to build for "Tile + pyramid"/"Cache pyramid
   // levels" — see TiffDisplayOptimizer.optimize's levelCount doc comment.
   // Left blank by default: null (see _positiveIntOrNull) means "let
   // minPyramidDimension decide instead", the library's own auto-computed
@@ -335,7 +335,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
     // Ticks the elapsed-time display while work is in flight — progress
     // updates themselves arrive in bursts (many per second while tiles are
     // being compressed, none at all during a single long decode/downsample
-    // step), so without this the "đã chạy Xs" text would stall between
+    // step), so without this the "elapsed Xs" text would stall between
     // updates instead of counting up smoothly.
     _optimizeTicker = Timer.periodic(const Duration(milliseconds: 200), (_) {
       if (mounted) setState(() {});
@@ -360,7 +360,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
       if (!mounted) return;
       setState(() {
         _optimizeProgress = fraction;
-        _optimizeStatusLine = 'Đang mã hoá dải $completed/$total';
+        _optimizeStatusLine = 'Encoding band $completed/$total';
       });
     }
 
@@ -380,7 +380,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
           levelCount: _positiveIntOrNull(_levelCountController.text),
           onProgress: onOptimizeProgress,
         );
-        if (error == null) successMessage = 'Đã lưu file tối ưu tại:\n$outputPath';
+        if (error == null) successMessage = 'Saved optimized file to:\n$outputPath';
         break;
       case 'pyramid_cache':
         error = await _runPyramidCacheBuild(
@@ -393,18 +393,18 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
         );
         if (error == null) {
           successMessage =
-              'Đã cache thêm các mức pyramid — không đổi/nhân bản file gốc, '
-              'mở lại file này sẽ zoom mượt hơn.';
+              'Cached extra pyramid levels — the original file is unchanged/not duplicated, '
+              'reopening this file will zoom more smoothly.';
           final cache = await _PyramidCache.open(widget.filePath);
           if (cache != null) {
             final cacheBytes = await File(cache.levelsFilePath).length();
             final sourceBytes = _fileSizeBytes;
             final ratio = sourceBytes != null && sourceBytes > 0 ? cacheBytes / sourceBytes : null;
             successMessage +=
-                '\nSố mức thêm: ${cache.levelCount}'
-                '\nDung lượng cache: ${_formatMemoryBytes(cacheBytes)}'
-                '${ratio != null ? ' (${(ratio * 100).toStringAsFixed(1)}% file gốc)' : ''}'
-                '\nVị trí: ${cache.dir.path}';
+                '\nLevels added: ${cache.levelCount}'
+                '\nCache size: ${_formatMemoryBytes(cacheBytes)}'
+                '${ratio != null ? ' (${(ratio * 100).toStringAsFixed(1)}% of original file)' : ''}'
+                '\nLocation: ${cache.dir.path}';
           }
         }
         break;
@@ -423,7 +423,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
           onProgress: onCacheProgress,
         );
         if (error == null) {
-          successMessage = 'Đã tạo cache hiển thị riêng cho ứng dụng — mở lại file này sẽ mượt hơn.';
+          successMessage = 'Created an app-private display cache — reopening this file will be smoother.';
           // Best-effort: reads the manifest just written back to report its
           // actual on-disk size next to the source file's, so the success
           // message shows a real number rather than just "done".
@@ -432,9 +432,9 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
             final sourceBytes = _fileSizeBytes;
             final ratio = sourceBytes != null && sourceBytes > 0 ? cache.cacheSizeBytes / sourceBytes : null;
             successMessage +=
-                '\nDung lượng cache: ${_formatMemoryBytes(cache.cacheSizeBytes)}'
-                '${ratio != null ? ' (${ratio.toStringAsFixed(1)}x file gốc)' : ''}'
-                '\nVị trí: ${cache.dir.path}';
+                '\nCache size: ${_formatMemoryBytes(cache.cacheSizeBytes)}'
+                '${ratio != null ? ' (${ratio.toStringAsFixed(1)}x original file)' : ''}'
+                '\nLocation: ${cache.dir.path}';
           }
         }
         break;
@@ -456,19 +456,19 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
     });
   }
 
-  /// Turns one [TiffOptimizeProgress] update into a ready-to-show Vietnamese
-  /// status line — the level/band/tile figures it carries are only
-  /// meaningful once translated like this, so this lives right next to
-  /// where progress is consumed rather than in the `tiff` package itself,
-  /// which stays UI- and language-agnostic.
+  /// Turns one [TiffOptimizeProgress] update into a ready-to-show status
+  /// line — the level/band/tile figures it carries are only meaningful once
+  /// translated like this, so this lives right next to where progress is
+  /// consumed rather than in the `tiff` package itself, which stays UI- and
+  /// language-agnostic.
   String _describeOptimizeProgress(TiffOptimizeProgress p) {
-    final level = 'mức ${p.level + 1}/${p.levelCount}';
+    final level = 'level ${p.level + 1}/${p.levelCount}';
     return switch (p.stage) {
       TiffOptimizeStage.decoding => p.stepCount > 1
-          ? 'Đang giải mã ảnh gốc — dải ${p.stepIndex}/${p.stepCount}'
-          : 'Đang giải mã ảnh gốc',
-      TiffOptimizeStage.downsampling => 'Đang thu nhỏ $level',
-      TiffOptimizeStage.encoding => 'Đang nén $level — tile ${p.stepIndex}/${p.stepCount}',
+          ? 'Decoding source image — band ${p.stepIndex}/${p.stepCount}'
+          : 'Decoding source image',
+      TiffOptimizeStage.downsampling => 'Downsampling $level',
+      TiffOptimizeStage.encoding => 'Compressing $level — tile ${p.stepIndex}/${p.stepCount}',
     };
   }
 
@@ -484,10 +484,10 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
     final line = _optimizeStatusLine;
     final progress = _optimizeProgress;
     if (line == null || progress == null) {
-      return 'Đang chuẩn bị... ($_optimizingLabel, đã chạy ${elapsedSeconds}s)';
+      return 'Preparing... ($_optimizingLabel, elapsed ${elapsedSeconds}s)';
     }
     final percent = (progress * 100).toStringAsFixed(0);
-    return '$line ($percent%) — đã chạy ${elapsedSeconds}s';
+    return '$line ($percent%) — elapsed ${elapsedSeconds}s';
   }
 
   /// Inserts `_[suffix]` before [path]'s extension (`foo.tiff` ->
@@ -586,11 +586,11 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                 if (_fileSizeBytes != null) Text('${_fileSizeBytes!} bytes on disk'),
                 Text(
                   _MemoryMonitor.isSupported
-                      ? 'Bộ nhớ ứng dụng: ${_formatMemoryBytes(_memoryRssBytes)} / '
+                      ? 'App memory: ${_formatMemoryBytes(_memoryRssBytes)} / '
                             '${_formatMemoryBytes(_MemoryMonitor.totalBudgetBytes)} '
-                            '(còn ${_formatMemoryBytes(_MemoryMonitor.availableBudgetFor(_memoryRssBytes))}) — '
-                            'các mức decode/cache tự co giãn theo số này'
-                      : 'Bộ nhớ ứng dụng: không đọc được trên nền tảng này — dùng ngân sách cố định',
+                            '(${_formatMemoryBytes(_MemoryMonitor.availableBudgetFor(_memoryRssBytes))} left) — '
+                            'decode/cache sizes scale with this'
+                      : 'App memory: unreadable on this platform — using a fixed budget',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
                 const SizedBox(height: 16),
@@ -602,12 +602,12 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                     spacing: 8,
                     runSpacing: 8,
                     children: [
-                      FilledButton.icon(onPressed: _openPreview, icon: const Icon(Icons.image), label: const Text('Xem ảnh')),
+                      FilledButton.icon(onPressed: _openPreview, icon: const Icon(Icons.image), label: const Text('View image')),
                     ],
                   ),
                   const SizedBox(height: 16),
                   Text(
-                    'Tối ưu hoá trước (không bắt buộc) — để lần xem sau mượt hơn:',
+                    'Optimize ahead of time (optional) — makes the next view smoother:',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                   const SizedBox(height: 8),
@@ -621,7 +621,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                           enabled: !_optimizing,
                           keyboardType: TextInputType.number,
                           decoration: const InputDecoration(
-                            labelText: 'Ngân sách bộ nhớ (MB)',
+                            labelText: 'Memory budget (MB)',
                             isDense: true,
                             border: OutlineInputBorder(),
                           ),
@@ -634,10 +634,10 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                           padding: const EdgeInsets.only(top: 4),
                           child: Text(
                             _MemoryMonitor.isSupported
-                                ? 'Khuyên dùng: ${_MemoryMonitor.defaultTotalBudgetBytes ~/ (1024 * 1024)} MB — '
-                                      'bộ nhớ khả dụng hiện tại: ${_formatMemoryBytes(_MemoryMonitor.availableBudgetFor(_memoryRssBytes))}'
-                                : 'Khuyên dùng: ${_MemoryMonitor.defaultTotalBudgetBytes ~/ (1024 * 1024)} MB — '
-                                      'bộ nhớ khả dụng hiện tại: không đọc được trên nền tảng này',
+                                ? 'Recommended: ${_MemoryMonitor.defaultTotalBudgetBytes ~/ (1024 * 1024)} MB — '
+                                      'current available memory: ${_formatMemoryBytes(_MemoryMonitor.availableBudgetFor(_memoryRssBytes))}'
+                                : 'Recommended: ${_MemoryMonitor.defaultTotalBudgetBytes ~/ (1024 * 1024)} MB — '
+                                      'current available memory: unreadable on this platform',
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
                         ),
@@ -656,7 +656,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                           enabled: !_optimizing,
                           keyboardType: TextInputType.number,
                           decoration: const InputDecoration(
-                            labelText: 'Kích thước tile (px)',
+                            labelText: 'Tile size (px)',
                             isDense: true,
                             border: OutlineInputBorder(),
                           ),
@@ -671,7 +671,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                           enabled: !_optimizing,
                           keyboardType: TextInputType.number,
                           decoration: const InputDecoration(
-                            labelText: 'Cạnh nhỏ nhất pyramid (px)',
+                            labelText: 'Min pyramid edge (px)',
                             isDense: true,
                             border: OutlineInputBorder(),
                           ),
@@ -686,8 +686,8 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                           enabled: !_optimizing,
                           keyboardType: TextInputType.number,
                           decoration: const InputDecoration(
-                            labelText: 'Số level pyramid',
-                            hintText: 'Tự động',
+                            labelText: 'Pyramid level count',
+                            hintText: 'Automatic',
                             isDense: true,
                             border: OutlineInputBorder(),
                           ),
@@ -698,13 +698,13 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                         child: Padding(
                           padding: const EdgeInsets.only(top: 4),
                           child: Text(
-                            'Áp dụng cho "Tile hoá + pyramid"/"Cache pyramid levels" '
-                            '("Chỉ tile hoá" bỏ qua cả hai). Để trống "Số level pyramid": '
-                            'tự tính theo "Cạnh nhỏ nhất pyramid" (giá trị càng nhỏ thì càng '
-                            'nhiều level, mỗi level giảm còn 1/2 kích thước level trước) — đã đủ '
-                            'nhỏ để hiển thị mượt mà mà không cần thu nhỏ thêm lúc xem. '
-                            'Nhập "Số level pyramid" để chỉ định đúng số level, bỏ qua '
-                            '"Cạnh nhỏ nhất pyramid".',
+                            'Applies to "Tile + pyramid"/"Cache pyramid levels" '
+                            '("Tile only" ignores both). Leave "Pyramid level count" blank: '
+                            'computed from "Min pyramid edge" (a smaller value means '
+                            'more levels, each level halving the size of the one before) — small '
+                            'enough to display smoothly without further downsampling at view time. '
+                            'Enter "Pyramid level count" to specify the exact level count, ignoring '
+                            '"Min pyramid edge".',
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
                         ),
@@ -723,8 +723,8 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                           enabled: !_optimizing,
                           keyboardType: TextInputType.number,
                           decoration: const InputDecoration(
-                            labelText: 'Số luồng xử lý',
-                            hintText: 'Tự động',
+                            labelText: 'Worker count',
+                            hintText: 'Automatic',
                             isDense: true,
                             border: OutlineInputBorder(),
                           ),
@@ -735,8 +735,8 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                         child: Padding(
                           padding: const EdgeInsets.only(top: 4),
                           child: Text(
-                            'Áp dụng cho "Cache pyramid levels" và mọi "Cache (...)" — số isolate giải mã song song. '
-                            'Để trống: tự chọn theo số lõi CPU và bộ nhớ khả dụng hiện tại.',
+                            'Applies to "Cache pyramid levels" and every "Cache (...)" — number of parallel decode isolates. '
+                            'Leave blank: chosen automatically from CPU core count and current available memory.',
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
                         ),
@@ -750,53 +750,53 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                     children: [
                       Tooltip(
                         message: _fullDecodeIsSafe
-                            ? 'Lưu 1 file TIFF mới — mượt cả khi pan lẫn zoom'
-                            : 'Đã tắt: ảnh quá lớn để decode toàn bộ',
+                            ? 'Saves a new TIFF file — smooth for both panning and zooming'
+                            : 'Disabled: image is too large to decode in full',
                         child: OutlinedButton(
                           onPressed: (_optimizing || !_fullDecodeIsSafe)
                               ? null
-                              : () => _runOptimize('tiledPyramid', 'Tile hoá + pyramid'),
-                          child: const Text('Tile hoá + pyramid'),
+                              : () => _runOptimize('tiledPyramid', 'Tile + pyramid'),
+                          child: const Text('Tile + pyramid'),
                         ),
                       ),
                       Tooltip(
-                        message: _fullDecodeIsSafe ? 'Lưu 1 file TIFF mới — mượt khi pan' : 'Đã tắt: ảnh quá lớn để decode toàn bộ',
+                        message: _fullDecodeIsSafe ? 'Saves a new TIFF file — smooth for panning' : 'Disabled: image is too large to decode in full',
                         child: OutlinedButton(
                           onPressed: (_optimizing || !_fullDecodeIsSafe)
                               ? null
-                              : () => _runOptimize('tiledOnly', 'Chỉ tile hoá'),
-                          child: const Text('Chỉ tile hoá'),
+                              : () => _runOptimize('tiledOnly', 'Tile only'),
+                          child: const Text('Tile only'),
                         ),
                       ),
                       Tooltip(
                         message: !_isTiledSource
-                            ? 'Đã tắt: chỉ hỗ trợ file đã ở dạng tile'
-                            : 'Cache riêng các mức pyramid nhỏ hơn — không đổi/nhân bản file gốc, nhẹ hơn nhiều '
-                                  'so với "Tile hoá + pyramid", và không giới hạn kích thước ảnh (decode theo dải)',
+                            ? 'Disabled: only supports files already in tiled form'
+                            : 'Caches smaller pyramid levels separately — the original file is unchanged/not '
+                                  'duplicated, much lighter than "Tile + pyramid", and has no image size limit (decodes band by band)',
                         child: OutlinedButton(
                           onPressed: (_optimizing || !_isTiledSource) ? null : () => _runOptimize('pyramid_cache', 'Cache pyramid levels'),
                           child: const Text('Cache pyramid levels'),
                         ),
                       ),
                       Tooltip(
-                        message: 'Cache RGBA thô — lớn nhất (~4x file gốc trở lên), đọc nhanh nhất, không mất chất lượng',
+                        message: 'Raw RGBA cache — largest (~4x original file or more), fastest to read, no quality loss',
                         child: OutlinedButton(
-                          onPressed: _optimizing ? null : () => _runOptimize('cache_raw', 'Cache (RGBA thô)'),
-                          child: const Text('Cache (RGBA thô)'),
+                          onPressed: _optimizing ? null : () => _runOptimize('cache_raw', 'Cache (raw RGBA)'),
+                          child: const Text('Cache (raw RGBA)'),
                         ),
                       ),
                       Tooltip(
-                        message: 'Cache nén Deflate — nhỏ hơn ~2-4x so với RGBA thô, không mất chất lượng, đọc chậm hơn một chút',
+                        message: 'Deflate-compressed cache — ~2-4x smaller than raw RGBA, no quality loss, slightly slower to read',
                         child: OutlinedButton(
-                          onPressed: _optimizing ? null : () => _runOptimize('cache_deflate', 'Cache (nén Deflate)'),
-                          child: const Text('Cache (nén Deflate)'),
+                          onPressed: _optimizing ? null : () => _runOptimize('cache_deflate', 'Cache (Deflate)'),
+                          child: const Text('Cache (Deflate)'),
                         ),
                       ),
                       Tooltip(
-                        message: 'Cache nén JPEG — nhỏ nhất, gần bằng file gốc, mất chất lượng nhẹ và đọc chậm hơn (giải mã JPEG)',
+                        message: 'JPEG-compressed cache — smallest, close to the original file size, slight quality loss and slower to read (JPEG decode)',
                         child: OutlinedButton(
-                          onPressed: _optimizing ? null : () => _runOptimize('cache_jpeg', 'Cache (nén JPEG)'),
-                          child: const Text('Cache (nén JPEG)'),
+                          onPressed: _optimizing ? null : () => _runOptimize('cache_jpeg', 'Cache (JPEG)'),
+                          child: const Text('Cache (JPEG)'),
                         ),
                       ),
                     ],
@@ -822,7 +822,7 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                 if (_previewLoading && _tileEngine == null && _regionEngine == null) ...[
                   const LinearProgressIndicator(),
                   const SizedBox(height: 8),
-                  Text('Đang mở ảnh...', style: Theme.of(context).textTheme.bodySmall),
+                  Text('Opening image...', style: Theme.of(context).textTheme.bodySmall),
                   const SizedBox(height: 16),
                 ],
                 if (_tileEngine?.fatalError != null) ...[

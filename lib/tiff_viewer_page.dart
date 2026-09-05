@@ -575,323 +575,337 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
   @override
   Widget build(BuildContext context) {
     final fileName = widget.filePath.split(Platform.pathSeparator).last;
+    final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: Text(fileName)),
+      appBar: AppBar(title: Text(fileName, overflow: TextOverflow.ellipsis)),
       body: _document == null && _decodeError == null
           ? const Center(child: CircularProgressIndicator())
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
-                Text(widget.filePath, style: Theme.of(context).textTheme.bodySmall),
-                if (_fileSizeBytes != null) Text('${_fileSizeBytes!} bytes on disk'),
-                Text(
-                  _MemoryMonitor.isSupported
-                      ? 'App memory: ${_formatMemoryBytes(_memoryRssBytes)} / '
-                            '${_formatMemoryBytes(_MemoryMonitor.totalBudgetBytes)} '
-                            '(${_formatMemoryBytes(_MemoryMonitor.availableBudgetFor(_memoryRssBytes))} left) — '
-                            'decode/cache sizes scale with this'
-                      : 'App memory: unreadable on this platform — using a fixed budget',
-                  style: Theme.of(context).textTheme.bodySmall,
+                _SectionCard(
+                  title: 'File',
+                  icon: Icons.description_outlined,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SelectableText(widget.filePath, style: theme.textTheme.bodySmall),
+                      if (_fileSizeBytes != null) ...[
+                        const SizedBox(height: 6),
+                        Text('${_formatMemoryBytes(_fileSizeBytes!)} on disk', style: theme.textTheme.bodyMedium),
+                      ],
+                      const SizedBox(height: 6),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(Icons.memory, size: 16, color: theme.colorScheme.onSurfaceVariant),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              _MemoryMonitor.isSupported
+                                  ? 'App memory: ${_formatMemoryBytes(_memoryRssBytes)} / '
+                                        '${_formatMemoryBytes(_MemoryMonitor.totalBudgetBytes)} '
+                                        '(${_formatMemoryBytes(_MemoryMonitor.availableBudgetFor(_memoryRssBytes))} left)'
+                                  : 'App memory: unreadable on this platform — using a fixed budget',
+                              style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
-                const SizedBox(height: 16),
-                if (_decodeError != null) _ErrorCard(title: 'TiffDecoder.decode() failed', error: _decodeError!),
-                if (_document != null) ..._buildDocumentInfo(_document!),
-                const SizedBox(height: 16),
+                if (_decodeError != null) ...[
+                  const SizedBox(height: 16),
+                  _ErrorCard(title: 'TiffDecoder.decode() failed', error: _decodeError!),
+                ],
+                if (_document != null) ...[
+                  const SizedBox(height: 16),
+                  _SectionCard(title: 'Metadata', icon: Icons.info_outline, child: Column(children: _buildDocumentInfo(_document!))),
+                ],
                 if (_document != null && _decodeError == null && !_previewStarted) ...[
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      FilledButton.icon(onPressed: _openPreview, icon: const Icon(Icons.image), label: const Text('View image')),
-                    ],
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(onPressed: _openPreview, icon: const Icon(Icons.image), label: const Text('View image')),
                   ),
                   const SizedBox(height: 16),
-                  Text(
-                    'Optimize ahead of time (optional) — makes the next view smoother:',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      SizedBox(
-                        width: 160,
-                        child: TextField(
-                          controller: _memoryBudgetController,
-                          enabled: !_optimizing,
-                          keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(
-                            labelText: 'Memory budget (MB)',
-                            isDense: true,
-                            border: OutlineInputBorder(),
+                  _CollapsibleSectionCard(
+                    title: 'Optimize ahead of time',
+                    subtitle: 'Optional — makes the next view smoother',
+                    icon: Icons.tune,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            SizedBox(
+                              width: 160,
+                              child: TextField(
+                                controller: _memoryBudgetController,
+                                enabled: !_optimizing,
+                                keyboardType: TextInputType.number,
+                                decoration: const InputDecoration(labelText: 'Memory budget (MB)', isDense: true),
+                                onChanged: _onMemoryBudgetChanged,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Text(
+                                  _MemoryMonitor.isSupported
+                                      ? 'Recommended: ${_MemoryMonitor.defaultTotalBudgetBytes ~/ (1024 * 1024)} MB — '
+                                            'current available memory: ${_formatMemoryBytes(_MemoryMonitor.availableBudgetFor(_memoryRssBytes))}'
+                                      : 'Recommended: ${_MemoryMonitor.defaultTotalBudgetBytes ~/ (1024 * 1024)} MB — '
+                                            'current available memory: unreadable on this platform',
+                                  style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            SizedBox(
+                              width: 160,
+                              child: TextField(
+                                key: const Key('tileSizeField'),
+                                controller: _tileSizeController,
+                                enabled: !_optimizing,
+                                keyboardType: TextInputType.number,
+                                decoration: const InputDecoration(labelText: 'Tile size (px)', isDense: true),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            SizedBox(
+                              width: 160,
+                              child: TextField(
+                                key: const Key('minPyramidDimensionField'),
+                                controller: _minPyramidDimensionController,
+                                enabled: !_optimizing,
+                                keyboardType: TextInputType.number,
+                                decoration: const InputDecoration(labelText: 'Min pyramid edge (px)', isDense: true),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            SizedBox(
+                              width: 160,
+                              child: TextField(
+                                key: const Key('levelCountField'),
+                                controller: _levelCountController,
+                                enabled: !_optimizing,
+                                keyboardType: TextInputType.number,
+                                decoration: const InputDecoration(
+                                  labelText: 'Pyramid level count',
+                                  hintText: 'Automatic',
+                                  isDense: true,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Text(
+                                  'Applies to "Tile + pyramid"/"Cache pyramid levels" '
+                                  '("Tile only" ignores both). Leave "Pyramid level count" blank: '
+                                  'computed from "Min pyramid edge" (a smaller value means '
+                                  'more levels, each level halving the size of the one before) — small '
+                                  'enough to display smoothly without further downsampling at view time. '
+                                  'Enter "Pyramid level count" to specify the exact level count, ignoring '
+                                  '"Min pyramid edge".',
+                                  style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            SizedBox(
+                              width: 160,
+                              child: TextField(
+                                key: const Key('workerCountField'),
+                                controller: _workerCountController,
+                                enabled: !_optimizing,
+                                keyboardType: TextInputType.number,
+                                decoration: const InputDecoration(labelText: 'Worker count', hintText: 'Automatic', isDense: true),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Text(
+                                  'Applies to "Cache pyramid levels" and every "Cache (...)" — number of parallel decode isolates. '
+                                  'Leave blank: chosen automatically from CPU core count and current available memory.',
+                                  style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            Tooltip(
+                              message: _fullDecodeIsSafe
+                                  ? 'Saves a new TIFF file — smooth for both panning and zooming'
+                                  : 'Disabled: image is too large to decode in full',
+                              child: OutlinedButton.icon(
+                                onPressed: (_optimizing || !_fullDecodeIsSafe)
+                                    ? null
+                                    : () => _runOptimize('tiledPyramid', 'Tile + pyramid'),
+                                icon: const Icon(Icons.grid_view, size: 18),
+                                label: const Text('Tile + pyramid'),
+                              ),
+                            ),
+                            Tooltip(
+                              message: _fullDecodeIsSafe
+                                  ? 'Saves a new TIFF file — smooth for panning'
+                                  : 'Disabled: image is too large to decode in full',
+                              child: OutlinedButton.icon(
+                                onPressed: (_optimizing || !_fullDecodeIsSafe)
+                                    ? null
+                                    : () => _runOptimize('tiledOnly', 'Tile only'),
+                                icon: const Icon(Icons.grid_on, size: 18),
+                                label: const Text('Tile only'),
+                              ),
+                            ),
+                            Tooltip(
+                              message: !_isTiledSource
+                                  ? 'Disabled: only supports files already in tiled form'
+                                  : 'Caches smaller pyramid levels separately — the original file is unchanged/not '
+                                        'duplicated, much lighter than "Tile + pyramid", and has no image size limit (decodes band by band)',
+                              child: OutlinedButton.icon(
+                                onPressed: (_optimizing || !_isTiledSource) ? null : () => _runOptimize('pyramid_cache', 'Cache pyramid levels'),
+                                icon: const Icon(Icons.layers_outlined, size: 18),
+                                label: const Text('Cache pyramid levels'),
+                              ),
+                            ),
+                            Tooltip(
+                              message: 'Raw RGBA cache — largest (~4x original file or more), fastest to read, no quality loss',
+                              child: OutlinedButton.icon(
+                                onPressed: _optimizing ? null : () => _runOptimize('cache_raw', 'Cache (raw RGBA)'),
+                                icon: const Icon(Icons.speed, size: 18),
+                                label: const Text('Cache (raw RGBA)'),
+                              ),
+                            ),
+                            Tooltip(
+                              message: 'Deflate-compressed cache — ~2-4x smaller than raw RGBA, no quality loss, slightly slower to read',
+                              child: OutlinedButton.icon(
+                                onPressed: _optimizing ? null : () => _runOptimize('cache_deflate', 'Cache (Deflate)'),
+                                icon: const Icon(Icons.compress, size: 18),
+                                label: const Text('Cache (Deflate)'),
+                              ),
+                            ),
+                            Tooltip(
+                              message: 'JPEG-compressed cache — smallest, close to the original file size, slight quality loss and slower to read (JPEG decode)',
+                              child: OutlinedButton.icon(
+                                onPressed: _optimizing ? null : () => _runOptimize('cache_jpeg', 'Cache (JPEG)'),
+                                icon: const Icon(Icons.photo_size_select_small, size: 18),
+                                label: const Text('Cache (JPEG)'),
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (_optimizing) ...[
+                          const SizedBox(height: 12),
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(4),
+                            child: LinearProgressIndicator(value: _optimizeProgress == 0 ? null : _optimizeProgress),
                           ),
-                          onChanged: _onMemoryBudgetChanged,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Padding(
-                          padding: const EdgeInsets.only(top: 4),
-                          child: Text(
-                            _MemoryMonitor.isSupported
-                                ? 'Recommended: ${_MemoryMonitor.defaultTotalBudgetBytes ~/ (1024 * 1024)} MB — '
-                                      'current available memory: ${_formatMemoryBytes(_MemoryMonitor.availableBudgetFor(_memoryRssBytes))}'
-                                : 'Recommended: ${_MemoryMonitor.defaultTotalBudgetBytes ~/ (1024 * 1024)} MB — '
-                                      'current available memory: unreadable on this platform',
-                            style: Theme.of(context).textTheme.bodySmall,
+                          const SizedBox(height: 6),
+                          Text(_optimizeStatusText(), style: theme.textTheme.bodySmall),
+                        ],
+                        if (_optimizeResult != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 12),
+                            child: Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: _optimizeResultIsError
+                                    ? theme.colorScheme.errorContainer
+                                    : Colors.green.withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Icon(
+                                    _optimizeResultIsError ? Icons.error_outline : Icons.check_circle_outline,
+                                    size: 18,
+                                    color: _optimizeResultIsError ? theme.colorScheme.error : Colors.green.shade700,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: SelectableText(
+                                      _optimizeResult!,
+                                      style: theme.textTheme.bodySmall?.copyWith(
+                                        color: _optimizeResultIsError ? theme.colorScheme.error : Colors.green.shade700,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
                           ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      SizedBox(
-                        width: 160,
-                        child: TextField(
-                          key: const Key('tileSizeField'),
-                          controller: _tileSizeController,
-                          enabled: !_optimizing,
-                          keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(
-                            labelText: 'Tile size (px)',
-                            isDense: true,
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      SizedBox(
-                        width: 160,
-                        child: TextField(
-                          key: const Key('minPyramidDimensionField'),
-                          controller: _minPyramidDimensionController,
-                          enabled: !_optimizing,
-                          keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(
-                            labelText: 'Min pyramid edge (px)',
-                            isDense: true,
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      SizedBox(
-                        width: 160,
-                        child: TextField(
-                          key: const Key('levelCountField'),
-                          controller: _levelCountController,
-                          enabled: !_optimizing,
-                          keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(
-                            labelText: 'Pyramid level count',
-                            hintText: 'Automatic',
-                            isDense: true,
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Padding(
-                          padding: const EdgeInsets.only(top: 4),
-                          child: Text(
-                            'Applies to "Tile + pyramid"/"Cache pyramid levels" '
-                            '("Tile only" ignores both). Leave "Pyramid level count" blank: '
-                            'computed from "Min pyramid edge" (a smaller value means '
-                            'more levels, each level halving the size of the one before) — small '
-                            'enough to display smoothly without further downsampling at view time. '
-                            'Enter "Pyramid level count" to specify the exact level count, ignoring '
-                            '"Min pyramid edge".',
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      SizedBox(
-                        width: 160,
-                        child: TextField(
-                          key: const Key('workerCountField'),
-                          controller: _workerCountController,
-                          enabled: !_optimizing,
-                          keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(
-                            labelText: 'Worker count',
-                            hintText: 'Automatic',
-                            isDense: true,
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Padding(
-                          padding: const EdgeInsets.only(top: 4),
-                          child: Text(
-                            'Applies to "Cache pyramid levels" and every "Cache (...)" — number of parallel decode isolates. '
-                            'Leave blank: chosen automatically from CPU core count and current available memory.',
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      Tooltip(
-                        message: _fullDecodeIsSafe
-                            ? 'Saves a new TIFF file — smooth for both panning and zooming'
-                            : 'Disabled: image is too large to decode in full',
-                        child: OutlinedButton(
-                          onPressed: (_optimizing || !_fullDecodeIsSafe)
-                              ? null
-                              : () => _runOptimize('tiledPyramid', 'Tile + pyramid'),
-                          child: const Text('Tile + pyramid'),
-                        ),
-                      ),
-                      Tooltip(
-                        message: _fullDecodeIsSafe ? 'Saves a new TIFF file — smooth for panning' : 'Disabled: image is too large to decode in full',
-                        child: OutlinedButton(
-                          onPressed: (_optimizing || !_fullDecodeIsSafe)
-                              ? null
-                              : () => _runOptimize('tiledOnly', 'Tile only'),
-                          child: const Text('Tile only'),
-                        ),
-                      ),
-                      Tooltip(
-                        message: !_isTiledSource
-                            ? 'Disabled: only supports files already in tiled form'
-                            : 'Caches smaller pyramid levels separately — the original file is unchanged/not '
-                                  'duplicated, much lighter than "Tile + pyramid", and has no image size limit (decodes band by band)',
-                        child: OutlinedButton(
-                          onPressed: (_optimizing || !_isTiledSource) ? null : () => _runOptimize('pyramid_cache', 'Cache pyramid levels'),
-                          child: const Text('Cache pyramid levels'),
-                        ),
-                      ),
-                      Tooltip(
-                        message: 'Raw RGBA cache — largest (~4x original file or more), fastest to read, no quality loss',
-                        child: OutlinedButton(
-                          onPressed: _optimizing ? null : () => _runOptimize('cache_raw', 'Cache (raw RGBA)'),
-                          child: const Text('Cache (raw RGBA)'),
-                        ),
-                      ),
-                      Tooltip(
-                        message: 'Deflate-compressed cache — ~2-4x smaller than raw RGBA, no quality loss, slightly slower to read',
-                        child: OutlinedButton(
-                          onPressed: _optimizing ? null : () => _runOptimize('cache_deflate', 'Cache (Deflate)'),
-                          child: const Text('Cache (Deflate)'),
-                        ),
-                      ),
-                      Tooltip(
-                        message: 'JPEG-compressed cache — smallest, close to the original file size, slight quality loss and slower to read (JPEG decode)',
-                        child: OutlinedButton(
-                          onPressed: _optimizing ? null : () => _runOptimize('cache_jpeg', 'Cache (JPEG)'),
-                          child: const Text('Cache (JPEG)'),
-                        ),
-                      ),
-                    ],
-                  ),
-                  if (_optimizing) ...[
-                    const SizedBox(height: 8),
-                    LinearProgressIndicator(value: _optimizeProgress == 0 ? null : _optimizeProgress),
-                    const SizedBox(height: 4),
-                    Text(_optimizeStatusText(), style: Theme.of(context).textTheme.bodySmall),
-                  ],
-                  if (_optimizeResult != null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: Text(
-                        _optimizeResult!,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: _optimizeResultIsError ? Theme.of(context).colorScheme.error : Colors.green.shade700,
-                        ),
-                      ),
+                      ],
                     ),
-                  const SizedBox(height: 16),
+                  ),
                 ],
                 if (_previewLoading && _tileEngine == null && _regionEngine == null) ...[
-                  const LinearProgressIndicator(),
-                  const SizedBox(height: 8),
-                  Text('Opening image...', style: Theme.of(context).textTheme.bodySmall),
                   const SizedBox(height: 16),
+                  ClipRRect(borderRadius: BorderRadius.circular(4), child: const LinearProgressIndicator()),
+                  const SizedBox(height: 8),
+                  Text('Opening image...', style: theme.textTheme.bodySmall),
                 ],
                 if (_tileEngine?.fatalError != null) ...[
-                  _ErrorCard(title: 'Tile decode failed', error: _tileEngine!.fatalError!),
                   const SizedBox(height: 16),
+                  _ErrorCard(title: 'Tile decode failed', error: _tileEngine!.fatalError!),
                 ],
                 if (_regionEngine?.fatalError != null) ...[
-                  _ErrorCard(title: 'Region decode failed', error: _regionEngine!.fatalError!),
                   const SizedBox(height: 16),
+                  _ErrorCard(title: 'Region decode failed', error: _regionEngine!.fatalError!),
                 ],
-                if (_tileEngine != null)
-                  SizedBox(
-                    height: 420,
-                    child: _TiledZoomableImage(
-                      key: ValueKey(widget.filePath),
-                      engine: _tileEngine!,
-                      scale: _PixelScale.from(_document!.images.first.metadata),
-                    ),
-                  )
-                else if (_regionEngine != null)
-                  SizedBox(
-                    height: 420,
-                    // Keyed by file path so zoom/pan state survives
-                    // brightness/contrast/gamma tweaks but resets when a
-                    // different file is opened.
-                    child: _RegionZoomableImage(
-                      key: ValueKey(widget.filePath),
-                      engine: _regionEngine!,
-                      scale: _PixelScale.from(_document!.images.first.metadata),
+                if (_tileEngine != null || _regionEngine != null) ...[
+                  const SizedBox(height: 16),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(16),
+                    child: Container(
+                      height: 420,
+                      color: theme.colorScheme.surfaceContainerHighest,
+                      child: _tileEngine != null
+                          ? _TiledZoomableImage(
+                              key: ValueKey(widget.filePath),
+                              engine: _tileEngine!,
+                              scale: _PixelScale.from(_document!.images.first.metadata),
+                            )
+                          // Keyed by file path so zoom/pan state survives
+                          // brightness/contrast/gamma tweaks but resets when a
+                          // different file is opened.
+                          : _RegionZoomableImage(
+                              key: ValueKey(widget.filePath),
+                              engine: _regionEngine!,
+                              scale: _PixelScale.from(_document!.images.first.metadata),
+                            ),
                     ),
                   ),
+                ],
                 if (_regionEngine != null) ...[
-                  const SizedBox(height: 8),
-                  _AdjustmentSlider(
-                    label: 'Brightness',
-                    value: _brightness,
-                    min: -100,
-                    max: 100,
-                    display: _brightness.toStringAsFixed(0),
-                    onChanged: (v) {
-                      setState(() => _brightness = v);
-                      _regionEngine!.setAdjustments(brightness: _brightness, contrast: _contrast, gamma: _gamma);
-                    },
-                  ),
-                  _AdjustmentSlider(
-                    label: 'Contrast',
-                    value: _contrast,
-                    min: 0,
-                    max: 3,
-                    display: _contrast.toStringAsFixed(2),
-                    onChanged: (v) {
-                      setState(() => _contrast = v);
-                      _regionEngine!.setAdjustments(brightness: _brightness, contrast: _contrast, gamma: _gamma);
-                    },
-                  ),
-                  _AdjustmentSlider(
-                    label: 'Gamma',
-                    value: _gamma,
-                    min: 0.1,
-                    max: 3,
-                    display: _gamma.toStringAsFixed(2),
-                    onChanged: (v) {
-                      setState(() => _gamma = v);
-                      _regionEngine!.setAdjustments(brightness: _brightness, contrast: _contrast, gamma: _gamma);
-                    },
-                  ),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: TextButton(
+                  const SizedBox(height: 16),
+                  _SectionCard(
+                    title: 'Adjustments',
+                    icon: Icons.exposure,
+                    trailing: TextButton(
                       onPressed: () {
                         setState(() {
                           _brightness = 0;
@@ -902,27 +916,77 @@ class _TiffViewerPageState extends State<TiffViewerPage> {
                       },
                       child: const Text('Reset'),
                     ),
+                    child: Column(
+                      children: [
+                        _AdjustmentSlider(
+                          label: 'Brightness',
+                          value: _brightness,
+                          min: -100,
+                          max: 100,
+                          display: _brightness.toStringAsFixed(0),
+                          onChanged: (v) {
+                            setState(() => _brightness = v);
+                            _regionEngine!.setAdjustments(brightness: _brightness, contrast: _contrast, gamma: _gamma);
+                          },
+                        ),
+                        _AdjustmentSlider(
+                          label: 'Contrast',
+                          value: _contrast,
+                          min: 0,
+                          max: 3,
+                          display: _contrast.toStringAsFixed(2),
+                          onChanged: (v) {
+                            setState(() => _contrast = v);
+                            _regionEngine!.setAdjustments(brightness: _brightness, contrast: _contrast, gamma: _gamma);
+                          },
+                        ),
+                        _AdjustmentSlider(
+                          label: 'Gamma',
+                          value: _gamma,
+                          min: 0.1,
+                          max: 3,
+                          display: _gamma.toStringAsFixed(2),
+                          onChanged: (v) {
+                            setState(() => _gamma = v);
+                            _regionEngine!.setAdjustments(brightness: _brightness, contrast: _contrast, gamma: _gamma);
+                          },
+                        ),
+                      ],
+                    ),
                   ),
                 ],
-                const SizedBox(height: 24),
                 if (_document != null) ...[
-                  Tooltip(
-                    message: _fullDecodeIsSafe
-                        ? ''
-                        : 'Disabled: this image is too large to decode at full resolution without risking an out-of-memory crash.',
-                    child: FilledButton.icon(
-                      onPressed: (_runningWriteTest || !_fullDecodeIsSafe) ? null : _runWriteTest,
-                      icon: _runningWriteTest
-                          ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                          : const Icon(Icons.save),
-                      label: const Text('Round-trip write test (force BigTIFF, Deflate)'),
+                  const SizedBox(height: 16),
+                  _CollapsibleSectionCard(
+                    title: 'Developer test',
+                    subtitle: 'Round-trip write test (force BigTIFF, Deflate)',
+                    icon: Icons.science_outlined,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Tooltip(
+                          message: _fullDecodeIsSafe
+                              ? ''
+                              : 'Disabled: this image is too large to decode at full resolution without risking an out-of-memory crash.',
+                          child: SizedBox(
+                            width: double.infinity,
+                            child: FilledButton.icon(
+                              onPressed: (_runningWriteTest || !_fullDecodeIsSafe) ? null : _runWriteTest,
+                              icon: _runningWriteTest
+                                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                                  : const Icon(Icons.save),
+                              label: const Text('Run round-trip write test'),
+                            ),
+                          ),
+                        ),
+                        if (_writeTestResult != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 12),
+                            child: SelectableText(_writeTestResult!, style: theme.textTheme.bodySmall),
+                          ),
+                      ],
                     ),
                   ),
-                  if (_writeTestResult != null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 12),
-                      child: SelectableText(_writeTestResult!),
-                    ),
                 ],
               ],
             ),
